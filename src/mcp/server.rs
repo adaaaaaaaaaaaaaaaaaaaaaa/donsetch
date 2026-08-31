@@ -1,12 +1,13 @@
 //! The stdio server: read loop, dispatch, writer task,
 //! and the fetch tool handler with full escalation.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt};
 
 use crate::crawl::real as crawl_real;
 use crate::crawl::{CrawlMode, CrawlOptions, Crawler};
@@ -24,6 +25,10 @@ use crate::search::intent::Intent;
 use crate::search::{self, Searcher};
 
 use super::tools;
+
+/// Keep batch fetches parallel without allowing one request to start
+/// twelve full HTTP/extraction/browser pipelines at once.
+const MAX_BATCH_FETCH_CONCURRENCY: usize = 4;
 
 /// Shared daemon state, built once, lives forever.
 pub struct Daemon {
@@ -967,33 +972,35 @@ async fn fetch_multi(
     }
     let progress_parts = ctx.as_ref().map(|c| c.progress_parts());
     let n_total = urls.len();
+    let completed = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let futs: Vec<_> = urls
         .iter()
-        .enumerate()
-        .map(|(i, u)| {
+        .map(|u| {
             let a = call_args.clone();
             let d = Arc::clone(daemon);
             let url = u.clone();
             let dl = deadline;
             let prog = progress_parts.clone();
+            let completed = Arc::clone(&completed);
             async move {
                 let v = run_with_budget(fetch_single(&d, &a, &url), dl, None, || {
                     deadline_error(&url)
                 })
                 .await;
                 if let Some(p) = &prog {
+                    let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     emit_progress(
                         p,
-                        (i + 1) as u64,
+                        done,
                         Some(n_total as u64),
-                        &format!("{}/{} done", i + 1, n_total),
+                        &format!("{done}/{n_total} done"),
                     );
                 }
                 v
             }
         })
         .collect();
-    let results = futures_util::future::join_all(futs).await;
+    let results = collect_bounded_in_order(futs, MAX_BATCH_FETCH_CONCURRENCY).await;
 
     let is_err = |v: &Value| v.get("isError").and_then(Value::as_bool).unwrap_or(false);
     let md_of = |v: &Value| {
@@ -1161,6 +1168,20 @@ async fn fetch_multi(
     })
 }
 
+/// Drive at most `limit` futures concurrently while restoring input order
+/// for callers whose response indices must stay aligned with request URLs.
+async fn collect_bounded_in_order<F, T>(futures: Vec<F>, limit: usize) -> Vec<T>
+where
+    F: Future<Output = T>,
+{
+    let mut indexed = futures_util::stream::iter(futures.into_iter().enumerate())
+        .map(|(index, future)| async move { (index, future.await) })
+        .buffer_unordered(limit.max(1))
+        .collect::<Vec<_>>()
+        .await;
+    indexed.sort_unstable_by_key(|(index, _)| *index);
+    indexed.into_iter().map(|(_, value)| value).collect()
+}
 /// Single-URL fetch with resurrection (v3): dead URLs get one
 /// honest attempt at the Wayback Machine before the error stands.
 async fn fetch_single(daemon: &Arc<Daemon>, args: &Value, url: &str) -> Value {
@@ -3995,5 +4016,42 @@ mod initialize_tests {
                 json!(v)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod batch_fetch_concurrency_tests {
+    use super::{MAX_BATCH_FETCH_CONCURRENCY, collect_bounded_in_order};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn collector_bounds_work_and_preserves_request_order() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let futures = (0..12)
+            .map(|index| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    // Reverse durations ensure completion order differs from
+                    // input order when more than one future is in flight.
+                    tokio::time::sleep(Duration::from_millis((12 - index) as u64)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    index
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let results = collect_bounded_in_order(futures, MAX_BATCH_FETCH_CONCURRENCY).await;
+        assert_eq!(results, (0..12).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= MAX_BATCH_FETCH_CONCURRENCY);
+        assert!(
+            peak.load(Ordering::SeqCst) > 1,
+            "work should remain parallel"
+        );
     }
 }
