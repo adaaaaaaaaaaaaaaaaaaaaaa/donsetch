@@ -937,7 +937,8 @@ mod tests {
             cmd: vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                r#"read -r line; printf '%s\n' '{"format":1,"results":[{"title":"echo","url":"https://echo.example"}]}'"#
+                r#"read -r line; printf '%s
+' '{"format":1,"results":[{"title":"echo","url":"https://echo.example"}]}'"#
                     .into(),
             ],
             timeout_ms: 10_000,
@@ -947,7 +948,9 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.hits.len(), 1);
         assert_eq!(outcome.hits[0].title, "echo");
-        assert!(outcome.ms > 0);
+        // Don't assert ms > 0: a fast spawn+echo can legitimately
+        // finish sub-millisecond. Upper bound only.
+        assert!(outcome.ms < 60_000);
     }
 
     #[cfg(unix)]
@@ -1064,11 +1067,13 @@ mod tests {
         // Two parallel searches each spawn their own child: they
         // must not (a) share pipes or (b) serialize. Each child
         // sleeps 1s, so wall time < 2s proves real concurrency.
+        // Generous time margins survive slow parallel CI slots:
+        // serialized = 6s+ (fails), parallel = ~3.3s (passes).
         let def = PluginDef {
             cmd: vec![
                 "/bin/sh".into(),
                 "-c".into(),
-                "sleep 1; echo '{\"format\":1,\"results\":[{\"title\":\"c\",\"url\":\"https://c.example\"}]}'".into(),
+                "sleep 3; echo '{\"format\":1,\"results\":[{\"title\":\"c\",\"url\":\"https://c.example\"}]}'".into(),
             ],
             timeout_ms: 10_000,
         };
@@ -1082,7 +1087,7 @@ mod tests {
         assert_eq!(ra.unwrap().unwrap().hits.len(), 1);
         assert_eq!(rb.unwrap().unwrap().hits.len(), 1);
         assert!(
-            start.elapsed() < Duration::from_secs(2),
+            start.elapsed() < Duration::from_secs(5),
             "parallel spawns must not serialize"
         );
     }
@@ -1090,13 +1095,16 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn spawn_roundtrip_cmd() {
-        // Windows counterpart: cmd /C reads stdin via `set /p`,
-        // then prints a valid envelope.
+        // Windows counterpart: cmd /C consumes stdin via set /p,
+        // then prints a valid envelope. NOTE: cmd does not treat
+        // backslash-quoted quotes like sh: the JSON must use plain
+        // double quotes or the backslashes land in the child
+        // output and the envelope fails to parse.
         let def = PluginDef {
             cmd: vec![
                 "cmd".into(),
                 "/C".into(),
-                "set /p line=& echo {\"format\":1,\"results\":[{\"title\":\"win\",\"url\":\"https://win.example\"}]}"
+                "set /p line=& echo {"format":1,"results":[{"title":"win","url":"https://win.example"}]}"
                     .into(),
             ],
             timeout_ms: 10_000,
