@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [3.5.2] - 2026-09-03
+
+### Added
+
+- **DeepSeek Harness (dsh) native plugin:** first-class dsh support
+  in a separate repo, [donsetch-dsh](https://github.com/dondai44423/donsetch-dsh).
+  One install line (`dsh plugin --profile web add github:dondai44423/donsetch-dsh`)
+  gives every dsh agent the full web suite as native `donsetch_*`
+  tools: in-process registration on the harness registry (permissions,
+  timeouts and cancellation apply like any native tool), platform
+  binary auto-download with SHA256 verification against the release
+  sidecar, auto-updates tracking DonSeTch releases, live pickup of
+  `donsetch keys add` config changes from the terminal, call/result
+  cards in the Web workbench, and a `donsetch_status` self-diagnostic
+  tool. Keyless engines work out of the box: no API key required.
+
 ### Added
 
 - **BYOK search plugins:** platforms without a native adapter can
