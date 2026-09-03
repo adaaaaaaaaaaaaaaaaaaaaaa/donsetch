@@ -1095,16 +1095,17 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn spawn_roundtrip_cmd() {
-        // Windows counterpart: cmd /C consumes stdin via set /p,
-        // then prints a valid envelope. NOTE: cmd does not treat
-        // backslash-quoted quotes like sh: the JSON must use plain
-        // double quotes or the backslashes land in the child
-        // output and the envelope fails to parse.
+        // Windows counterpart: cmd /C prints a valid envelope
+        // straight away (the child never reads stdin; our small
+        // request write always fits the pipe buffer). NOTE: cmd
+        // echoes double quotes verbatim and does NOT interpret
+        // backslash-quote like sh, so the JSON uses plain quotes
+        // and no cmd special characters.
         let def = PluginDef {
             cmd: vec![
                 "cmd".into(),
                 "/C".into(),
-                "set /p line=& echo {"format":1,"results":[{"title":"win","url":"https://win.example"}]}"
+                r#"echo {"format":1,"results":[{"title":"win","url":"https://win.example"}]}"#
                     .into(),
             ],
             timeout_ms: 10_000,
