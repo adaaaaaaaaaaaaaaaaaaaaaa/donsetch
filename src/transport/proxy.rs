@@ -57,7 +57,7 @@ pub struct Proxy {
     pub scheme: ProxyScheme,
 }
 
-/// Redacts `pass` — a derived Debug would print the plaintext proxy
+/// Redacts `pass`: a derived Debug would print the plaintext proxy
 /// password into any log/error output that formats a `Proxy` with
 /// `{:?}`. No such call site exists today, but nothing stops one
 /// being added later without anyone noticing the leak.

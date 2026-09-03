@@ -74,12 +74,12 @@ pub struct KeyEntry {
     pub ts: u64,
 }
 
-/// Redacts `key` — a derived Debug would print the plaintext BYOK
+/// Redacts `key`: a derived Debug would print the plaintext BYOK
 /// API key into any log/error output that formats a `KeyEntry` (or
 /// a `ProviderConfig`/`ByokConfig` containing one) with `{:?}`. The
 /// existing debug logging in `byok::mod` is careful to print only
 /// `key.chars().take(8)`, but that's a manual convention, not
-/// something the type system enforces — this closes the gap so a
+/// something the type system enforces: this closes the gap so a
 /// future `{cfg:?}`-style dump can't defeat it by accident.
 impl std::fmt::Debug for KeyEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -660,7 +660,7 @@ mod tests {
         assert!(entry_out.contains("***"));
 
         // The derived Debug on the containing structs calls
-        // KeyEntry's own (redacted) fmt for each element — the leak
+        // KeyEntry's own (redacted) fmt for each element: the leak
         // must not resurface just by formatting the outer config.
         let cfg_out = format!("{cfg:?}");
         assert!(
