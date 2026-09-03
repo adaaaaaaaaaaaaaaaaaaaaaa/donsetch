@@ -1095,24 +1095,37 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn spawn_roundtrip_cmd() {
-        // Windows counterpart: cmd /C prints a valid envelope
-        // straight away (the child never reads stdin; our small
-        // request write always fits the pipe buffer). NOTE: cmd
-        // echoes double quotes verbatim and does NOT interpret
-        // backslash-quote like sh, so the JSON uses plain quotes
-        // and no cmd special characters.
+        // Windows spawn test without argv quoting games : the
+        // envelope lives in a helper .bat file (exact bytes on
+        // disk, CRLF line endings), and argv carries only the
+        // bat path. A leading `set /p` consumes the stdin
+        // request first so the full pipe contract is exercised.
+        let mut bat = std::env::temp_dir();
+        bat.push(format!(
+            "donsetch_wintest_{}_{}.bat",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &bat,
+            "@echo off\r\nset /p line=\r\necho {\"format\":1,\"results\":[{\"title\":\"win\",\"url\":\"https://win.example\"}]}\r\n",
+        )
+        .unwrap();
         let def = PluginDef {
             cmd: vec![
                 "cmd".into(),
                 "/C".into(),
-                r#"echo {"format":1,"results":[{"title":"win","url":"https://win.example"}]}"#
-                    .into(),
+                bat.to_string_lossy().into_owned(),
             ],
             timeout_ms: 10_000,
         };
         let outcome = run_plugin("winecho", &def, "hello", 5, &Intent::Web)
             .await
             .unwrap();
+        let _ = std::fs::remove_file(&bat);
         assert_eq!(outcome.hits.len(), 1);
         assert_eq!(outcome.hits[0].title, "win");
     }
