@@ -2279,10 +2279,12 @@ async fn ghost_escalate(
                 // Fall through into the normal harvest/retry flow.
                 page = p2;
             }
-            _ => {
+            Some(p2) if p2.captcha => {
                 if let Some(p) = shot {
                     let _ = g.screenshot(p).await;
                 }
+                // The wall survived BOTH passes in a real browser:
+                // this is wall-persisting evidence, recorded.
                 daemon.state.lock().await.record_wall_failed(host);
                 return Err((
                     format!(
@@ -2291,6 +2293,20 @@ async fn ghost_escalate(
                     "walled",
                 ));
             }
+            // ghost_fetch errored on the retry (automation failure,
+            // not a wall): no wall memory recorded.
+            None => {
+                if let Some(p) = shot {
+                    let _ = g.screenshot(p).await;
+                }
+                return Err((
+                    format!(
+                        "blocked at {url} : interactive captcha or challenge could not be solved automatically. Use an Agent browser to browse sites like these"
+                    ),
+                    "walled",
+                ));
+            }
+            _ => unreachable!(),
         }
     }
     if !page.captcha {
