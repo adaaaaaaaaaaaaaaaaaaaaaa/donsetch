@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Self-improvement engine upgraded: fail-fast wall memory + background
+  pre-solve.** The domain profile now remembers when a wall survives REAL
+  browser solves (not just tier-1 challenges): two consecutive
+  wall-persisted passes put the domain into a solve-cooldown with
+  exponential backoff (15 min base, doubling, 2 h cap). Inside the
+  cooldown a fetch answers honestly in milliseconds instead of burning
+  a 20-40 s browser cycle per attempt. The memory heals itself: a
+  successful solve or a tier-1 cold success clears it. Searches now
+  opportunistically pre-solve the top result's domain in the
+  background while the agent reads results (bounded: one in flight,
+  top result only), so the follow-up fetch lands warm. Wall failures
+  in the ghost path feed the same memory, and warm routing still
+  requires a verified tier-1 replay.
+
+### Added
+
 - **Stealth floor rebuilt (v3.6 line, part 1): wire-truth tier 1,
   capture-driven, no guesses.** A dev rig now captures the REAL
   browser's HTTP/2 byte stream (examples/chrome_h2_probe.rs: real

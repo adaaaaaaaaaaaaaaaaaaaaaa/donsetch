@@ -239,11 +239,9 @@ const PROBE_SPAWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// (major, google-chrome-branded).
 fn probe_installed() -> Option<(u32, bool)> {
     *PROBED.get_or_init(|| {
-        // Fast path: read what browser wrote about itself. No spawn.
-        if let Some(major) = probe_registry_major() {
-            // Registry path carries no brand: Chromium registry keys imply
-            // the family by key (Google Chrome key = branded).
-            return Some((major, true));
+        if let Some((major, branded)) = probe_registry() {
+            // The key family tells the brand truth directly.
+            return Some((major, branded));
         }
         // Fallback: ask the binary, but never let it hang or orphan.
         let browser = crate::ghost::resolve_browser_without_download().ok()?;
@@ -254,47 +252,47 @@ fn probe_installed() -> Option<(u32, bool)> {
     })
 }
 
-/// Windows: read the major version from the browser's own
-/// `BLBeacon\version` registry value. Honours `DONGHOST_CHROME` by
-/// probing the browser family it names first.
+/// Windows: read the major version + brand truth from the browser's
+/// own `BLBeacon\version` registry value. The key family decides the
+/// brand: `Software\Google\Chrome` = Google-branded; Chromium/Edge/
+/// Thorium report their own (non-Google) brands. Honours `DONGHOST_CHROME`
+/// by probing the browser family it names first.
 #[cfg(windows)]
-fn probe_registry_major() -> Option<u32> {
+fn probe_registry() -> Option<(u32, bool)> {
     use windows_sys::Win32::System::Registry as reg;
 
-    // Candidate registry paths, in preference order. `DONGHOST_CHROME`
-    // names one binary : probe its family first so a Thorium fork is
-    // read from the Thorium key, not from whichever Chrome is installed.
-    let mut keys: Vec<&str> = vec![
-        "Software\\Google\\Chrome\\BLBeacon",
-        "Software\\Chromium\\BLBeacon",
-        "Software\\Microsoft\\Edge\\BLBeacon",
-        "Software\\Thorium\\BLBeacon",
+    // (key path, google-branded)
+    let mut keys: Vec<(&str, bool)> = vec![
+        ("Software\\Google\\Chrome\\BLBeacon", true),
+        ("Software\\Chromium\\BLBeacon", false),
+        ("Software\\Microsoft\\Edge\\BLBeacon", false),
+        ("Software\\Thorium\\BLBeacon", false),
     ];
     // Sort DONGHOST_CHROME's family to the front if it doesn't already
     // lead : cheap, and makes the explicit choice authoritative.
     if let Some(p) = std::env::var_os("DONGHOST_CHROME") {
         let p = p.to_string_lossy().to_lowercase();
-        for (family, key) in [
-            ("thorium", "Software\\Thorium\\BLBeacon"),
-            ("chrome", "Software\\Google\\Chrome\\BLBeacon"),
-            ("chromium", "Software\\Chromium\\BLBeacon"),
-            ("edge", "Software\\Microsoft\\Edge\\BLBeacon"),
+        for (family, key, branded) in [
+            ("thorium", "Software\\Thorium\\BLBeacon", false),
+            ("chrome", "Software\\Google\\Chrome\\BLBeacon", true),
+            ("chromium", "Software\\Chromium\\BLBeacon", false),
+            ("edge", "Software\\Microsoft\\Edge\\BLBeacon", false),
         ] {
             if p.contains(family) {
-                if let Some(pos) = keys.iter().position(|k| *k == key) {
+                if let Some(pos) = keys.iter().position(|(k, _)| *k == key) {
                     keys.remove(pos);
-                    keys.insert(0, key);
+                    keys.insert(0, (key, branded));
                 }
                 break;
             }
         }
     }
 
-    for key in keys {
+    for (key, branded) in keys {
         if let Some(v) = registry_string(reg::HKEY_CURRENT_USER, key, "version")
             && let Some(major) = parse_version_major(&v)
         {
-            return Some(major);
+            return Some((major, branded));
         }
     }
     None
@@ -304,7 +302,7 @@ fn probe_registry_major() -> Option<u32> {
 /// the spawned probe directly. (Stub keeps `probe_installed`
 /// platform-symmetric.)
 #[cfg(not(windows))]
-fn probe_registry_major() -> Option<u32> {
+fn probe_registry() -> Option<(u32, bool)> {
     None
 }
 
