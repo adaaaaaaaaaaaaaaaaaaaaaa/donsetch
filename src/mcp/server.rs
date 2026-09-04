@@ -591,6 +591,7 @@ async fn crawl_tool(daemon: &Arc<Daemon>, args: &Value, ctx: Option<ToolCtx>) ->
         }
     }
 
+    let requested_mode = opts.mode;
     let crawl_t0 = std::time::Instant::now();
     let result = match daemon.crawler.crawl(&url, opts, resume.as_deref()).await {
         Ok(r) => {
@@ -637,104 +638,105 @@ async fn crawl_tool(daemon: &Arc<Daemon>, args: &Value, ctx: Option<ToolCtx>) ->
         }
     };
 
-    // Content text: the map (if any) + pages. Keep the lead-in
-    // small; the pages are the payload.
+    render_crawl_result(&result, requested_mode)
+}
+
+fn render_crawl_result(result: &crate::crawl::CrawlResult, requested_mode: CrawlMode) -> Value {
+    // One linear evidence document: page identity and body appear exactly once.
     let mut text = String::new();
-    text.push_str(&format!(
-        "# crawl: {} ({} pages, stop={:?}, {:.1}s)\n\n",
-        result.seed,
-        result.pages.len(),
-        result.stop,
-        result.elapsed.as_secs_f64()
-    ));
-    // A crawl-delay-pace crawl looks hung without this note :
-    // the site demanded the pace, we honored it, say so.
-    if let Some(cd) = result.crawl_delay
-        && cd > 2.0
-    {
-        text.push_str(&format!(
-            "*robots crawl-delay: {cd:.0}s between requests (site-declared; pass respect_robots=false to override)*\n\n"
-        ));
-    }
-    if !result.map.is_empty() {
-        text.push_str("## map\n");
+    text.push_str(&format!("# Crawl\n{}\n\n", result.seed));
+    if requested_mode == CrawlMode::Map {
+        text.push_str("## Discovered URLs\n");
         for u in &result.map {
             text.push_str(&format!("- {u}\n"));
         }
         text.push('\n');
     }
-    for p in &result.pages {
-        if p.duplicate {
-            continue;
+    if requested_mode != CrawlMode::Map {
+        for (index, page) in result
+            .pages
+            .iter()
+            .filter(|page| !page.duplicate)
+            .enumerate()
+        {
+            text.push_str(&format!("## [{}]", index + 1));
+            if !page.title.is_empty() {
+                text.push_str(&format!(" {}", page.title));
+            }
+            text.push('\n');
+            text.push_str(&page.url);
+            let body = strip_source_frontmatter(
+                &page.markdown,
+                &page.url,
+                (!page.title.is_empty()).then_some(page.title.as_str()),
+            );
+            if !body.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&body);
+            }
+            text.push_str("\n\n---\n\n");
         }
-        text.push_str(&format!("## [{}] {}\n", p.title, p.url));
-        text.push_str(&format!(
-            "kind={:?} quality={:.2} {} chars\n\n",
-            p.kind, p.quality, p.chars
-        ));
-        text.push_str(&p.markdown);
-        text.push_str("\n\n---\n\n");
-    }
-    if !result.skipped.is_empty() {
-        text.push_str("## skipped\n");
-        for (u, why) in &result.skipped {
-            text.push_str(&format!("- {u}: {why}\n"));
+        if requested_mode == CrawlMode::Full {
+            let rendered = result
+                .pages
+                .iter()
+                .filter(|page| !page.duplicate)
+                .map(|page| page.url.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            let remaining = result
+                .map
+                .iter()
+                .filter(|url| !rendered.contains(url.as_str()))
+                .collect::<Vec<_>>();
+            if !remaining.is_empty() {
+                text.push_str("## Discovered URLs not fetched\n");
+                for url in remaining {
+                    text.push_str(&format!("- {url}\n"));
+                }
+            }
         }
-    }
-    if let Some(tok) = &result.resume {
-        text.push_str(&format!(
-            "\nresume: call crawl again with resume={tok} to continue.\n"
-        ));
     }
 
-    // Agent guidance: next_action tells the agent what to try
-    // next when results are poor or empty. Computed from the
-    // stop reason, skip reasons, and page count.
-    let next_action = compute_crawl_next_action(&result);
-    if !next_action.is_empty() {
-        text.push_str(&format!("\n💡 {next_action}\n"));
-    }
-
-    let structured = json!({
+    let next_action = compute_crawl_next_action(result);
+    let mut structured = json!({
         "seed": result.seed,
+        "complete": matches!(result.stop, crate::crawl::StopReason::FrontierEmpty),
         "pages": result.pages.iter().filter(|p| !p.duplicate).map(|p| json!({
+            "url": p.url,
+            "lastmod": p.lastmod,
+        })).collect::<Vec<_>>(),
+        "stop": format!("{:?}", result.stop),
+    });
+    if let Some(resume) = &result.resume {
+        structured["resume"] = json!(resume);
+    }
+    if !next_action.is_empty() {
+        structured["next_action"] = json!(next_action);
+    }
+    let debug = json!({
+        "mode": format!("{:?}", requested_mode),
+        "map": result.map,
+        "queued": result.queued,
+        "filtered_out": result.filtered_out,
+        "skipped": result.skipped.iter().map(|(u, w)| json!({"url": u, "reason": w})).collect::<Vec<_>>(),
+        "pages": result.pages.iter().map(|p| json!({
             "url": p.url,
             "title": p.title,
             "kind": format!("{:?}", p.kind),
             "chars": p.chars,
             "quality": p.quality,
+            "duplicate": p.duplicate,
             "parent": p.parent,
             "score": (p.score * 100.0).round() / 100.0,
             "lastmod": p.lastmod,
         })).collect::<Vec<_>>(),
-        "map": result.map,
-        "queued": result.queued,
-        "filtered_out": result.filtered_out,
-        "skipped": result.skipped.iter().map(|(u, w)| json!({"url": u, "reason": w})).collect::<Vec<_>>(),
-        "stop": format!("{:?}", result.stop),
         "crawl_delay": result.crawl_delay,
         "elapsed_s": result.elapsed.as_secs_f64(),
-        "resume": result.resume,
-        "next_action": next_action,
     });
-    let mut meta = json!({
-        "seed": result.seed,
-        "pages": result.pages.iter().filter(|p| !p.duplicate).count(),
-        "stop": format!("{:?}", result.stop),
-        "elapsed_s": (result.elapsed.as_secs_f64() * 10.0).round() / 10.0,
-    });
-    if let Some(tok) = &result.resume {
-        meta["resume"] = json!(tok);
-    }
-    if !next_action.is_empty() {
-        meta["next_action"] = json!(next_action);
-    }
     json!({
-        "content": [
-            {"type": "text", "text": format!("[meta] {}", compact_json(&meta))},
-            {"type": "text", "text": text},
-        ],
-        "structuredContent": structured
+        "content": [{"type": "text", "text": text.trim_end()}],
+        "structuredContent": structured,
+        "_meta": {"com.donsetch/crawl-debug": debug},
     })
 }
 
@@ -2926,14 +2928,6 @@ async fn fetch_with_actions(
     res
 }
 
-/// Compact JSON string (no whitespace) for embedding in text
-/// content blocks. Used for [meta] blocks that give clients
-/// (Claude Code, VSCode) essential fields they'd otherwise
-/// only get from structuredContent.
-fn compact_json(v: &Value) -> String {
-    serde_json::to_string(v).unwrap_or_default()
-}
-
 /// v3 image OCR: fetch + OCR the page's content images (up to 4,
 /// 5MB each, SSRF-guarded) and append an `## image text` section
 /// to the result. On-demand only : OCR models are heavy and most
@@ -4440,6 +4434,59 @@ mod batch_output_contract_tests {
         assert_eq!(flagged_state["next_offset"], 16000);
         assert_eq!(flagged_state["cloak_suspected"], true);
         assert_eq!(flagged_state["archived"]["age_days"], 3);
+    }
+}
+
+#[cfg(test)]
+mod crawl_output_contract_tests {
+    use super::render_crawl_result;
+    use crate::crawl::{CrawlMode, CrawlPage, CrawlResult, StopReason};
+    use crate::extract::ContentKind;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn crawl_renders_page_identity_once_and_keeps_resume_as_state() {
+        let page = CrawlPage {
+            url: "https://example.com/docs/page".into(),
+            title: "Evidence page".into(),
+            kind: ContentKind::Article,
+            markdown: "# Evidence page\nhttps://example.com/docs/page\n\nUseful evidence.".into(),
+            chars: 16,
+            quality: 0.93,
+            duplicate: false,
+            parent: Some("https://example.com/docs/".into()),
+            score: 0.88,
+            lastmod: Some("2026-09-04".into()),
+        };
+        let result = CrawlResult {
+            seed: "https://example.com/docs/".into(),
+            pages: vec![page],
+            queued: vec![],
+            filtered_out: 0,
+            skipped: vec![],
+            stop: StopReason::MaxPages,
+            elapsed: Duration::from_millis(42),
+            map: vec![],
+            crawl_delay: None,
+            resume: Some("opaque-resume".into()),
+        };
+        let output = render_crawl_result(&result, CrawlMode::Full);
+        let text = output["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text.matches("Evidence page").count(), 1);
+        assert_eq!(text.matches("https://example.com/docs/page").count(), 1);
+        assert!(!text.contains("quality="));
+        assert!(!text.contains("opaque-resume"));
+        assert_eq!(output["structuredContent"]["resume"], "opaque-resume");
+        assert!(
+            output["structuredContent"]["pages"][0]
+                .get("quality")
+                .is_none()
+        );
+        assert_eq!(
+            output["_meta"]["com.donsetch/crawl-debug"]["pages"][0]["quality"],
+            json!(0.93_f32)
+        );
     }
 }
 
