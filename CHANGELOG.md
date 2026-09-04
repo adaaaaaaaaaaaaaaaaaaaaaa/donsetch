@@ -5,6 +5,16 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`chrome_h2_probe` non-Linux CI:** gate the Linux-only imports,
+  ALPN callback, and frame-decoding helpers together with the probe entry
+  point, so `cargo clippy --all-targets -- -Dwarnings` does not compile them
+  as unused code on Windows or macOS.
+
+
 ## [3.6.0] - 2026-09-04
 
 ### Added
