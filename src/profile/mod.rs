@@ -78,7 +78,7 @@ pub struct BrowserProfile {
 impl BrowserProfile {
     /// Chrome 150 on the given platform. Ground truth: Chromium 150 capture, 2026-07-30.
     pub fn chrome_150(platform: Platform) -> Self {
-        Self::chrome(150, platform)
+        Self::chrome(150, platform, true)
     }
 
     /// Chrome `major` on the given platform. The TLS/H2 tables are
@@ -87,7 +87,19 @@ impl BrowserProfile {
     /// browser and tier 1 advertise the SAME identity : clearance
     /// cookies are bound to it, and a ghost solving on Chromium 151
     /// while tier 1 claims 150 gets its replays rejected.
-    pub fn chrome(major: u32, platform: Platform) -> Self {
+    ///
+    /// `branded` = the host binary is Google-Chrome-branded (it has a
+    /// third Sec-CH-UA brand). Distro Chromium sends only
+    /// `"Chromium";v=N, "Not=A?Brand";v=99` (greased version 99,
+    /// Chromium first) : Chrome 151 ground truth, captured live.
+    pub fn chrome(major: u32, platform: Platform, branded: bool) -> Self {
+        let sec_ch_ua = if branded {
+            format!(
+                "\"Chromium\";v=\"{major}\", \"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"{major}\""
+            )
+        } else {
+            format!("\"Chromium\";v=\"{major}\", \"Not=A?Brand\";v=\"99\"")
+        };
         Self {
             name: "chrome-150",
             tls: TlsProfile {
@@ -114,19 +126,22 @@ impl BrowserProfile {
                 "Mozilla/5. ({}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36",
                 platform.ua_token()
             ),
-            sec_ch_ua: format!(
-                "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"{major}\", \"Google Chrome\";v=\"{major}\""
-            ),
+            sec_ch_ua,
             platform,
         }
     }
 
     /// Default: host-coherent identity (a Windows agent looks like Windows Chrome).
-    /// The major version is probed from the INSTALLED browser when
-    /// one exists (ghost + tier 1 must claim the same version).
+    /// The major version AND the brand set (distro Chromium vs Google Chrome)
+    /// are probed from the INSTALLED browser (ghost + tier 1 must claim the
+    /// same version and brand list).
     pub fn host_default() -> Self {
-        match probe_installed_major() {
-            Some(major) => Self::chrome(major, Platform::host()),
+        let (major, branded) = match probe_installed() {
+            Some((m, b)) => (Some(m), b),
+            None => (None, true),
+        };
+        match major {
+            Some(major) => Self::chrome(major, Platform::host(), branded),
             None => Self::chrome_150(Platform::host()),
         }
     }
@@ -149,7 +164,6 @@ impl BrowserProfile {
             ("sec-fetch-dest".into(), "document".into()),
             ("accept-encoding".into(), "gzip, deflate, br, zstd".into()),
             ("accept-language".into(), accept_language_for(host, path).to_string()),
-            ("priority".into(), "u=0, i".into()),
         ]
     }
 }
@@ -215,21 +229,28 @@ pub fn accept_language_for(host: &str, path: &str) -> &'static str {
 ///
 /// The result is cached in a `OnceLock` so the probe runs at most
 /// once per process.
-static PROBED_MAJOR: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+static PROBED: std::sync::OnceLock<Option<(u32, bool)>> = std::sync::OnceLock::new();
 
 /// Hard cap on the spawned `--version` probe. Chrome 129 on Windows
 /// is known to hang (or crash-loop its network/GPU services) under
 /// `--headless=new`; without this cap tier 1 blocks forever at boot.
 const PROBE_SPAWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-pub fn probe_installed_major() -> Option<u32> {
-    *PROBED_MAJOR.get_or_init(|| {
+/// (major, google-chrome-branded).
+fn probe_installed() -> Option<(u32, bool)> {
+    *PROBED.get_or_init(|| {
         // Fast path: read what browser wrote about itself. No spawn.
         if let Some(major) = probe_registry_major() {
-            return Some(major);
+            // Registry path carries no brand: Chromium registry keys imply
+            // the family by key (Google Chrome key = branded).
+            return Some((major, true));
         }
         // Fallback: ask the binary, but never let it hang or orphan.
-        probe_spawned_major()
+        let browser = crate::ghost::resolve_browser_without_download().ok()?;
+        let path = browser.path.to_string_lossy().to_string();
+        let banner = probe_version_string_at_path(&path)?;
+        let branded = banner.contains("Google Chrome") || banner.contains("Google Chrome Canary");
+        probe_version_at_path(&path).map(|m| (m, branded))
     })
 }
 
@@ -280,7 +301,7 @@ fn probe_registry_major() -> Option<u32> {
 }
 
 /// Non-Windows: there is no registry to consult : fall through to
-/// the spawned probe directly. (Stub keeps `probe_installed_major`
+/// the spawned probe directly. (Stub keeps `probe_installed`
 /// platform-symmetric.)
 #[cfg(not(windows))]
 fn probe_registry_major() -> Option<u32> {
@@ -486,13 +507,6 @@ fn spawn_probe_with_timeout(mut cmd: std::process::Command) -> Result<String, St
     }
 }
 
-/// Resolve without downloading: this synchronous probe runs from async entry
-/// points, and the blocking installer must stay inside its dedicated check.
-pub(crate) fn probe_spawned_major() -> Option<u32> {
-    let browser = crate::ghost::resolve_browser_without_download().ok()?;
-    probe_version_at_path(&browser.path.to_string_lossy())
-}
-
 /// Parse the first full dotted Chromium version from a version banner.
 pub(crate) fn parse_version_string(line: &str) -> Option<String> {
     line.split_whitespace().find_map(|token| {
@@ -574,7 +588,23 @@ mod locale_tests {
 
 #[cfg(test)]
 mod probe_tests {
-    use super::{parse_version_major, parse_version_string};
+    use super::{BrowserProfile, Platform, parse_version_major, parse_version_string};
+
+    #[test]
+    fn brand_lists_match_chrome_151_capture() {
+        // Distro Chromium (this host's capture): two brands, greased v=99.
+        let p = BrowserProfile::chrome(151, Platform::Linux, false);
+        assert_eq!(
+            p.sec_ch_ua,
+            "\"Chromium\";v=\"151\", \"Not=A?Brand\";v=\"99\""
+        );
+        // Google-Chrome-branded: third brand appended, same greased version.
+        let b = BrowserProfile::chrome(151, Platform::Linux, true);
+        assert_eq!(
+            b.sec_ch_ua,
+            "\"Chromium\";v=\"151\", \"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\""
+        );
+    }
 
     #[test]
     fn parses_known_banner_shapes() {

@@ -2192,7 +2192,7 @@ async fn ghost_escalate(
         .map_err(|e| (format!("browser launch failed: {e}"), "permanent"))?;
     trace.step("2", "browser-launch", "ok", t0.elapsed().as_millis());
     let t1 = std::time::Instant::now();
-    let page = match ops::ghost_fetch(&mut g, url, std::time::Duration::from_secs(20)).await {
+    let mut page = match ops::ghost_fetch(&mut g, url, std::time::Duration::from_secs(20)).await {
         Ok(p) => p,
         Err(e) => {
             // CDP timeouts on first attempt are transient : the
@@ -2228,15 +2228,82 @@ async fn ghost_escalate(
         );
     }
     if page.captcha {
-        if let Some(p) = shot {
-            let _ = g.screenshot(p).await;
+        // Solve-grade second pass: some vendors (Akamai) run the
+        // sensor on the first load and only clear on a follow-up
+        // navigation once their first-party state is planted. The
+        // browser is warm now: one bounded re-render, then a
+        // settle re-check. Never more: two passes is the ceiling,
+        // an honest captcha stays an honest captcha.
+        let t1b = std::time::Instant::now();
+        let page2 = ops::ghost_fetch(&mut g, url, std::time::Duration::from_secs(20))
+            .await
+            .ok();
+        match page2 {
+            Some(p2) if !p2.captcha => {
+                trace.step(
+                    "2",
+                    "solve-pass2",
+                    &format!(
+                        "cleared: captcha={} dom={}KB",
+                        p2.captcha,
+                        p2.html.len() / 1024
+                    ),
+                    t1b.elapsed().as_millis(),
+                );
+                // Fall through into the normal harvest/retry flow.
+                page = p2;
+            }
+            _ => {
+                if let Some(p) = shot {
+                    let _ = g.screenshot(p).await;
+                }
+                return Err((
+                    format!(
+                        "blocked at {url} : interactive captcha or challenge could not be solved automatically. Use an Agent browser to browse sites like these"
+                    ),
+                    "walled",
+                ));
+            }
         }
-        return Err((
-            format!(
-                "blocked at {url} : interactive captcha or challenge could not be solved automatically. Use an Agent browser to browse sites like these"
-            ),
-            "walled",
-        ));
+    }
+    if !page.captcha {
+        // Solve-grade pass for invisible walls: Akamai-class vendors
+        // render a "still checking" page that settles (no captcha
+        // form) but whose DOM classifies as a wall. The sensor fires
+        // during pass 1 and plants first-party state; a warm re-render
+        // right after is the pass that gets the real page. One
+        // attempt only, then fall into the normal flow regardless.
+        let dom_verdict = crate::detect::walls::detect_dom_smart(page.html.as_bytes());
+        // Gate: a stuck wall burns the FULL 20s in pass 1; a second
+        // 20s pass2b on top = 40s of dead air. Only re-render when
+        // pass 1 returned fast (the wall cleared mid-flight and the
+        // re-render catches the real page).
+        if matches!(
+            dom_verdict,
+            crate::detect::walls::Verdict::Challenge(_) | crate::detect::walls::Verdict::Blocked
+        ) && page.took < std::time::Duration::from_secs(12)
+        {
+            let t1b = std::time::Instant::now();
+            if let Ok(p2) = ops::ghost_fetch(&mut g, url, std::time::Duration::from_secs(20)).await
+            {
+                let v2 = crate::detect::walls::detect_dom_smart(p2.html.as_bytes());
+                if !p2.captcha
+                    && !matches!(
+                        v2,
+                        crate::detect::walls::Verdict::Challenge(_)
+                            | crate::detect::walls::Verdict::Blocked
+                    )
+                {
+                    trace.step(
+                        "2",
+                        "solve-pass2",
+                        &format!("cleared after re-render: {}KB", p2.html.len() / 1024),
+                        t1b.elapsed().as_millis(),
+                    );
+                    page = p2;
+                }
+            }
+        }
     }
     if !page.cookies.is_empty() {
         daemon.fetcher.import_cookies(&page.cookies).await;
