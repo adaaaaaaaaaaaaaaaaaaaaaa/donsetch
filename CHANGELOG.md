@@ -7,13 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Compact MCP contracts:** model-facing tool schemas now keep lifecycle
+  guidance on the tool and field-specific rules on each parameter, while
+  preserving the full CLI help. Search, fetch, crawl, and batch responses
+  render evidence once, retain actionable routing and recovery state, and
+  move bounded diagnostics to client-only `_meta`. The three existing tools,
+  acquisition, ranking, explicit query grouping, and fallback behavior are
+  unchanged.
+  Credit: adaaaaaaaaaaaaaaaaaaaaa (#120). CLI stats footer updated in the
+  same change set to read moved telemetry from `_meta`.
+
 ### Fixed
 
 - **`chrome_h2_probe` non-Linux CI:** gate the Linux-only imports,
   ALPN callback, and frame-decoding helpers together with the probe entry
   point, so `cargo clippy --all-targets -- -Dwarnings` does not compile them
   as unused code on Windows or macOS.
-
+  Credit: adaaaaaaaaaaaaaaaaaaaaa (#121).
 
 ## [3.6.0] - 2026-09-04
 
