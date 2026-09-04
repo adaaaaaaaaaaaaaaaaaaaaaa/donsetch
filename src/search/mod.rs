@@ -1214,6 +1214,66 @@ or add an API-key provider (`donsetch keys add`)*\n",
     md
 }
 
+/// Compact MCP evidence surface. Rank already communicates the ordering
+/// decision, while per-engine scores and timings remain available as client
+/// diagnostics. Keep only evidence and state that can alter the next action.
+pub fn render_compact_markdown(
+    out: &SearchOutcome,
+    heading: &str,
+    handles: Option<&[String]>,
+    hints: &[Option<String>],
+) -> String {
+    let mut markdown = String::new();
+    if !heading.is_empty() {
+        markdown.push_str(heading);
+        markdown.push('\n');
+    }
+
+    for (index, result) in out.results.iter().enumerate() {
+        let reference = handles
+            .and_then(|items| items.get(index))
+            .map(String::as_str)
+            .unwrap_or(&result.url);
+        let host = rank::host_of(&result.url);
+        markdown.push_str(&format!(
+            "{}. {reference} · {} : {host}",
+            index + 1,
+            result.title
+        ));
+        if let Some(hint) = hints.get(index).and_then(|hint| hint.as_deref()) {
+            markdown.push(' ');
+            markdown.push_str(hint);
+        }
+        markdown.push('\n');
+        if !result.snippet.is_empty() {
+            markdown.push_str("   ");
+            markdown.push_str(&clip_snippet(&result.snippet, SNIPPET_CHARS));
+            markdown.push('\n');
+        }
+    }
+
+    if out.results.is_empty() {
+        markdown.push_str("No results. Retry once with a materially different formulation.\n");
+    } else if out.weak {
+        markdown.push_str("Weak results : low cross-source agreement.\n");
+    }
+
+    let unavailable = out
+        .report
+        .iter()
+        .filter(|report| report.status != "ok")
+        .count();
+    if unavailable > 0 {
+        markdown.push_str(&format!(
+            "Degraded retrieval : {}/{} backends available.\n",
+            out.report.len() - unavailable,
+            out.report.len()
+        ));
+    }
+
+    markdown.trim_end().to_string()
+}
+
 /// structuredContent metadata.
 pub fn render_meta(out: &SearchOutcome) -> Value {
     json!({
@@ -1483,6 +1543,59 @@ mod tests {
             md.contains("engines: bing, ddg · score: 0.83"),
             "provenance line missing:\n{md}"
         );
+    }
+
+    #[test]
+    fn compact_markdown_keeps_evidence_and_actionable_state_only() {
+        let mut result = merged("https://tokio.rs/runtime");
+        result.title = "Tokio runtime guide".into();
+        result.snippet = "A focused explanation of the asynchronous runtime.".into();
+        result.sources = vec![("bing".into(), 0), ("ddg".into(), 2)];
+        result.score = 0.8312;
+        let mut search = outcome(vec![result]);
+        search.weak = true;
+        search.report = vec![
+            EngineReport {
+                engine: "bing".into(),
+                status: "ok".into(),
+                hits: 10,
+                ms: 12,
+                egress: "direct".into(),
+            },
+            EngineReport {
+                engine: "ddg".into(),
+                status: "blocked:403".into(),
+                hits: 0,
+                ms: 20,
+                egress: "proxy".into(),
+            },
+        ];
+
+        let markdown = render_compact_markdown(
+            &search,
+            "# Search results",
+            Some(&["S1".into()]),
+            &[Some("· ⚠ needs browser".into())],
+        );
+        assert!(markdown.contains("1. S1 · Tokio runtime guide : tokio.rs · ⚠ needs browser"));
+        assert!(markdown.contains("A focused explanation"));
+        assert!(markdown.contains("Weak results : low cross-source agreement."));
+        assert!(markdown.contains("Degraded retrieval : 1/2 backends available."));
+        for diagnostic in [
+            "engines:",
+            "score:",
+            "results in",
+            "via local",
+            "fetch results by",
+        ] {
+            assert!(!markdown.contains(diagnostic), "{diagnostic}:\n{markdown}");
+        }
+    }
+
+    #[test]
+    fn compact_markdown_gives_zero_result_recovery() {
+        let markdown = render_compact_markdown(&outcome(Vec::new()), "# Search results", None, &[]);
+        assert!(markdown.contains("materially different formulation"));
     }
 
     #[test]

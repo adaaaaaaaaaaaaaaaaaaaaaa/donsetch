@@ -3674,31 +3674,64 @@ async fn search_inner(
         Ok(out) => {
             let top = out.results.first().map(|r| r.url.as_str());
             maybe_pre_solve(daemon, top);
-            render_search_outcome(daemon, &out, query).await
+            render_search_outcome(daemon, &out).await
         }
         Err(failure) => search_error(query, &failure.cause, failure.byok_tried),
     }
 }
 
-async fn render_search_outcome(
-    daemon: &Arc<Daemon>,
-    out: &crate::search::SearchOutcome,
-    query: &str,
-) -> Value {
+async fn render_search_outcome(daemon: &Arc<Daemon>, out: &crate::search::SearchOutcome) -> Value {
     let hs = bind_search_handles(daemon, out).await;
     let hints = route_hints(daemon, out).await;
-    let md = search::render_markdown(out, query, Some(&hs), &hints);
-    let meta = search::render_meta(out);
+    let md = search::render_compact_markdown(out, "# Search results", Some(&hs), &hints);
+    let model = search_model_meta(out, &hs);
+    let debug = search_debug_meta(out);
     json!({
         "content": [{ "type": "text", "text": md }],
-        "structuredContent": meta,
+        "structuredContent": model,
+        "_meta": {"com.donsetch/search-debug": debug},
     })
 }
 
-/// Execute explicit query variants concurrently but keep every result set
-/// separate. Cross-query score fusion would create a second, unbenchmarked
-/// ranker; grouped evidence lets the calling model compare formulations while
-/// each query retains DonSeTch's existing ranking semantics.
+/// Machine state needed to route a subsequent fetch. Titles and snippets are
+/// already present on the linear evidence surface; ranking and engine
+/// telemetry remain in client-only metadata.
+fn search_model_meta(out: &crate::search::SearchOutcome, handles: &[String]) -> Value {
+    let results = out
+        .results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| {
+            let mut item = json!({
+                "rank": index + 1,
+                "url": result.url,
+            });
+            if let Some(handle) = handles.get(index) {
+                item["handle"] = json!(handle);
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    json!({"weak": out.weak, "results": results})
+}
+
+fn search_debug_meta(out: &crate::search::SearchOutcome) -> Value {
+    let mut debug = search::render_meta(out);
+    if let Some(results) = debug.get_mut("results").and_then(Value::as_array_mut) {
+        for result in results {
+            if let Some(fields) = result.as_object_mut() {
+                fields.remove("title");
+                fields.remove("url");
+                fields.remove("snippet");
+            }
+        }
+    }
+    debug
+}
+
+/// Execute explicit query variants concurrently and keep every result set
+/// separate. Grouped evidence lets the calling model compare formulations
+/// while each query retains DonSeTch's established ranking semantics.
 async fn search_batch_inner(
     daemon: &Arc<Daemon>,
     queries: &[String],
@@ -3745,16 +3778,18 @@ async fn search_batch_inner(
         .collect::<Vec<_>>();
     let handles = bind_search_urls(daemon, &urls).await;
     let mut handle_offset = 0usize;
-    let mut markdown = format!(
-        "*{} explicit query formulations searched in parallel; result sets are kept separate.*\n\n",
-        queries.len()
-    );
+    let mut markdown = format!("# Search results : {} formulations", queries.len());
     let mut searches = Vec::with_capacity(queries.len());
+    let mut diagnostics = Vec::with_capacity(queries.len());
 
     for (query, outcome) in queries.iter().zip(outcomes.iter()) {
-        if !markdown.ends_with("\n\n") {
-            markdown.push_str("\n\n");
-        }
+        markdown.push_str("\n\n");
+        let role = if searches.is_empty() {
+            "primary"
+        } else {
+            "variant"
+        };
+        let heading = format!("## q{} {role} : {query}", searches.len());
         match outcome {
             Ok(out) => {
                 let count = out.results.len();
@@ -3765,22 +3800,27 @@ async fn search_batch_inner(
                 };
                 handle_offset += count;
                 let hints = route_hints(daemon, out).await;
-                markdown.push_str(&search::render_markdown(out, query, query_handles, &hints));
-                markdown.push_str("\n---\n");
-                let mut meta = search::render_meta(out);
-                meta["query"] = json!(query);
-                searches.push(meta);
+                markdown.push_str(&search::render_compact_markdown(
+                    out,
+                    &heading,
+                    query_handles,
+                    &hints,
+                ));
+                let mut model = search_model_meta(out, query_handles.unwrap_or(&[]));
+                model["query"] = json!(query);
+                searches.push(model);
+                let mut debug = search_debug_meta(out);
+                debug["query"] = json!(query);
+                diagnostics.push(debug);
             }
             Err(failure) => {
-                markdown.push_str(&format!(
-                    "# Search: {query}\n\n*failed: {}*\n\n---\n",
-                    failure.cause
-                ));
+                markdown.push_str(&format!("{heading}\nFailed : {}", failure.cause));
                 searches.push(json!({
                     "query": query,
                     "error": failure.cause,
                     "results": [],
                 }));
+                diagnostics.push(json!({"query": query, "error": failure.cause}));
             }
         }
     }
@@ -3791,9 +3831,12 @@ async fn search_batch_inner(
             "query_count": queries.len(),
             "ok": ok,
             "errors": queries.len() - ok,
-            "elapsed_ms": started.elapsed().as_millis() as u64,
             "searches": searches,
         },
+        "_meta": {"com.donsetch/search-debug": {
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+            "searches": diagnostics,
+        }},
     })
 }
 
@@ -4348,6 +4391,47 @@ mod fetch_output_contract_tests {
             )
             .contains("# Actual first section")
         );
+    }
+}
+
+#[cfg(test)]
+mod search_output_contract_tests {
+    use super::{search_debug_meta, search_model_meta};
+    use crate::search::SearchOutcome;
+    use crate::search::intent::Intent;
+    use crate::search::rank::Merged;
+    use std::time::Duration;
+
+    #[test]
+    fn search_structure_routes_without_repeating_ranked_evidence() {
+        let output = SearchOutcome {
+            results: vec![Merged {
+                title: "Visible in markdown".into(),
+                url: "https://example.com/answer".into(),
+                snippet: "Evidence belongs to text".into(),
+                sources: vec![("bing".into(), 0)],
+                score: 0.9,
+                published: None,
+            }],
+            weak: false,
+            intent: Intent::Web,
+            report: Vec::new(),
+            cached: false,
+            elapsed: Duration::from_millis(10),
+            provider: None,
+            reranked: true,
+        };
+        let state = search_model_meta(&output, &["S1".into()]);
+        assert_eq!(state["results"][0]["rank"], 1);
+        assert_eq!(state["results"][0]["handle"], "S1");
+        for absent in ["title", "snippet", "score", "engines"] {
+            assert!(state["results"][0].get(absent).is_none());
+        }
+        let debug = search_debug_meta(&output);
+        assert_eq!(debug["results"][0]["score"], 0.9);
+        assert!(debug["results"][0].get("title").is_none());
+        assert!(debug["results"][0].get("url").is_none());
+        assert!(debug["results"][0].get("snippet").is_none());
     }
 }
 
