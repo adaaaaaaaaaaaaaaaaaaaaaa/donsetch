@@ -13,6 +13,7 @@
 use boring_sys as bs;
 
 use std::net::TcpListener;
+#[cfg(not(windows))]
 use std::os::fd::AsRawFd;
 use std::process::Command;
 
@@ -45,6 +46,12 @@ extern "C" fn alpn_select(
     }
 }
 
+#[cfg(windows)]
+fn main() {
+    eprintln!("chrome_h2_probe is a Linux dev rig; it never runs on Windows");
+}
+
+#[cfg(not(windows))]
 fn main() {
     let root = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
     let cert = format!("{root}/tests/landmarks/h2cert.pem\0");
