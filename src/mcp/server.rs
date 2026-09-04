@@ -1844,9 +1844,10 @@ async fn fetch_single_inner(daemon: &Arc<Daemon>, args: &Value, url: &str) -> Va
                     &trace,
                     t0.elapsed().as_millis(),
                 );
-                res["_meta"] = json!({ "ttlMs": 300_000, "cacheScope": "session" });
-                if prewarmed && let Some(sc) = res.pointer_mut("/structuredContent") {
-                    sc["prewarmed_by_search"] = json!(true);
+                res["_meta"]["ttlMs"] = json!(300_000);
+                res["_meta"]["cacheScope"] = json!("session");
+                if prewarmed {
+                    res["_meta"]["com.donsetch/fetch-debug"]["prewarmed_by_search"] = json!(true);
                 }
                 apply_link_handles(daemon, &mut res).await;
                 return res;
@@ -2038,8 +2039,8 @@ async fn fetch_single_inner(daemon: &Arc<Daemon>, args: &Value, url: &str) -> Va
         &trace,
         t0.elapsed().as_millis(),
     );
-    if prewarmed && let Some(sc) = res.pointer_mut("/structuredContent") {
-        sc["prewarmed_by_search"] = json!(true);
+    if prewarmed {
+        res["_meta"]["com.donsetch/fetch-debug"]["prewarmed_by_search"] = json!(true);
     }
     if stitched_parts > 1
         && let Some(sc) = res.pointer_mut("/structuredContent")
@@ -2060,7 +2061,7 @@ async fn fetch_single_inner(daemon: &Arc<Daemon>, args: &Value, url: &str) -> Va
         cloak_warning = Some(note);
     }
     if let Some(note) = &cloak_warning {
-        if let Some(cell) = res.pointer_mut("/content/1/text")
+        if let Some(cell) = res.pointer_mut("/content/0/text")
             && let Some(md) = cell.as_str().map(String::from)
         {
             *cell = json!(format!("*[cloak_suspected: {note}]*\n\n{md}"));
@@ -2184,13 +2185,11 @@ async fn try_bypass(
         trace,
         t0.elapsed().as_millis(),
     );
-    if let Some(sc) = res.pointer_mut("/structuredContent") {
-        sc["bypass"] = json!({
-            "provider": "brightdata",
-            "tier": if outcome.cached { "cache" } else { "unlocker" },
-            "cache": outcome.cached,
-        });
-    }
+    res["_meta"]["com.donsetch/fetch-debug"]["bypass"] = json!({
+        "provider": "brightdata",
+        "tier": if outcome.cached { "cache" } else { "unlocker" },
+        "cache": outcome.cached,
+    });
     apply_link_handles(daemon, &mut res).await;
     Some(res)
 }
@@ -2961,7 +2960,7 @@ async fn apply_image_ocr(daemon: &Arc<Daemon>, res: &mut Value, images: &[(Strin
                 }
             }
         }
-        if let Some(cell) = res.pointer_mut("/content/1/text")
+        if let Some(cell) = res.pointer_mut("/content/0/text")
             && let Some(md) = cell.as_str().map(String::from)
         {
             *cell = json!(md + &section);
@@ -3122,35 +3121,26 @@ async fn try_resurrect(daemon: &Arc<Daemon>, url: &str, live_error: &Value) -> O
     let mut trace = Trace::default();
     trace.step("archive", "wayback", &format!("snapshot {ts}"), 0);
     let structured = json!({
+        "content_ok": !ex.thin,
+        "url": url,
+        "snapshot_url": snap_url,
+        "archived": { "snapshot": ts, "date": date, "age_days": age_days },
+    });
+    let debug = json!({
         "status": snap.status,
         "tier": "1(wayback)",
         "verdict": "Archived",
-        "content_ok": !ex.thin,
         "thin": ex.thin,
         "title": ex.title,
         "total_chars": ex.total_chars,
         "tokens_est": tokens,
-        "url": url,
-        "snapshot_url": snap_url,
-        "archived": { "snapshot": ts, "date": date, "age_days": age_days },
         "live_error": live_reason,
         "escalation": trace.value(),
     });
-    let meta = json!({
-        "url": url,
-        "tier": "1(wayback)",
-        "verdict": "Archived",
-        "archived": date,
-        "age_days": age_days,
-        "tokens_est": tokens,
-        "title": ex.title,
-    });
     Some(json!({
-        "content": [
-            {"type": "text", "text": format!("[meta] {}", compact_json(&meta))},
-            {"type": "text", "text": ex.markdown},
-        ],
+        "content": [{"type": "text", "text": format_fetch_markdown(&ex, &snap_url, url)}],
         "structuredContent": structured,
+        "_meta": {"com.donsetch/fetch-debug": debug},
     }))
 }
 
@@ -3256,9 +3246,9 @@ fn apply_page_history(
     if since_last {
         let title_line = ex_title.map(|t| format!("# {t}\n")).unwrap_or_default();
         let body = match (changed.as_str(), &delta) {
-            ("unchanged", _) => format!(
-                "{title_line}{url}\n\n*unchanged since last fetch ({ago}s ago) : fingerprint {fp}*\n"
-            ),
+            ("unchanged", _) => {
+                format!("{title_line}{url}\n\n*unchanged since last fetch ({ago}s ago)*\n")
+            }
             (_, Some(d)) => format!(
                 "{title_line}{url}\n\n*changed since last fetch ({changed}, {ago}s ago):*\n\n- {d}\n\n*(full content: refetch without since_last)*\n"
             ),
@@ -3266,17 +3256,14 @@ fn apply_page_history(
                 "{title_line}{url}\n\n*{changed} since last fetch ({ago}s ago) : refetch without since_last for full content*\n"
             ),
         };
-        if let Some(cell) = res.pointer_mut("/content/1/text") {
+        if let Some(cell) = res.pointer_mut("/content/0/text") {
             *cell = json!(body);
-        }
-        if let Some(sc) = res.pointer_mut("/structuredContent") {
-            sc["tokens_est"] = json!(body.len() / 4);
         }
     } else if changed != "new" {
         // Note in the content on change (first contact with the
         // delta is valuable; unchanged stays silent).
         if let Some(d) = &delta
-            && let Some(cell) = res.pointer_mut("/content/1/text")
+            && let Some(cell) = res.pointer_mut("/content/0/text")
             && let Some(md) = cell.as_str().map(String::from)
         {
             *cell = json!(format!(
@@ -3286,31 +3273,17 @@ fn apply_page_history(
         }
     }
 
-    // Stamp meta + structuredContent.
-    let mut meta_patch = json!({ "fp": fp, "changed": changed });
-    if ago > 0 {
-        meta_patch["age_s"] = json!(ago);
-    }
-    if let Some(d) = &delta {
-        meta_patch["changed_sections"] = json!(d);
-    }
-    if let Some(cell) = res.pointer_mut("/content/0/text")
-        && let Some(t) = cell.as_str().map(String::from)
-        && t.ends_with('}')
-    {
-        let mut obj: serde_json::Map<String, Value> =
-            serde_json::from_str(&t.replace("[meta] ", "")).unwrap_or_default();
-        for (k, v) in meta_patch.as_object().unwrap() {
-            obj.insert(k.clone(), v.clone());
-        }
-        *cell = json!(format!("[meta] {}", Value::Object(obj)));
-    }
+    // Change state affects the next model decision. Opaque fingerprints and
+    // observation age are client diagnostics.
     if let Some(sc) = res.pointer_mut("/structuredContent") {
-        sc["fingerprint"] = json!(fp);
         sc["changed"] = json!(changed);
         if let Some(d) = &delta {
             sc["changed_sections"] = json!(d);
         }
+    }
+    res["_meta"]["com.donsetch/fetch-debug"]["fingerprint"] = json!(fp);
+    if ago > 0 {
+        res["_meta"]["com.donsetch/fetch-debug"]["history_age_s"] = json!(ago);
     }
 }
 
@@ -3322,7 +3295,7 @@ fn now_unix() -> u64 {
 }
 
 /// v3 reference handles: rewrite markdown links in a fetch result
-/// to `L{n}` handles and stamp the count into the [meta] block.
+/// to `L{n}` handles and expose the count as compact machine state.
 /// Mutates `res` in place; no-op when links aren't in the output.
 async fn apply_link_handles(daemon: &Arc<Daemon>, res: &mut Value) {
     // When handles are disabled, links keep their hrefs.
@@ -3330,7 +3303,7 @@ async fn apply_link_handles(daemon: &Arc<Daemon>, res: &mut Value) {
         return;
     }
     let Some(text) = res
-        .pointer("/content/1/text")
+        .pointer("/content/0/text")
         .and_then(Value::as_str)
         .map(String::from)
     else {
@@ -3342,22 +3315,59 @@ async fn apply_link_handles(daemon: &Arc<Daemon>, res: &mut Value) {
         return;
     }
     ht.flush();
-    if let Some(cell) = res.pointer_mut("/content/1/text") {
+    if let Some(cell) = res.pointer_mut("/content/0/text") {
         *cell = json!(new_md);
-    }
-    // Stamp the handle count into the [meta] line so the agent
-    // knows links are fetchable handles now. The meta text is
-    // "[meta] {compact json}" : splice before the closing brace.
-    if let Some(meta_text) = res.pointer_mut("/content/0/text")
-        && let Some(s) = meta_text.as_str().map(String::from)
-        && s.ends_with('}')
-    {
-        let patched = s.trim_end_matches('}').to_string() + &format!(",\"link_handles\":{n}}}");
-        *meta_text = json!(patched);
     }
     if let Some(sc) = res.pointer_mut("/structuredContent") {
         sc["link_handles"] = json!(n);
     }
+}
+
+/// Remove only frontmatter represented by the wrapper's canonical source
+/// header. Byline, publication date and summaries remain evidence.
+fn strip_source_frontmatter(markdown: &str, url: &str, title: Option<&str>) -> String {
+    const FRONTMATTER_LINES: usize = 8;
+    let mut dropped_title = false;
+    let mut dropped_url = false;
+    let mut lines = Vec::new();
+    for (index, line) in markdown.lines().enumerate() {
+        let is_same_title = title.is_some_and(|title| {
+            line.strip_prefix("# ")
+                .is_some_and(|candidate| candidate.trim() == title.trim())
+        });
+        if index < FRONTMATTER_LINES && !dropped_title && is_same_title {
+            dropped_title = true;
+            continue;
+        }
+        if index < FRONTMATTER_LINES && !dropped_url && same_fetch_url(line.trim(), url) {
+            dropped_url = true;
+            continue;
+        }
+        lines.push(line);
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn same_fetch_url(candidate: &str, expected: &str) -> bool {
+    match (url::Url::parse(candidate), url::Url::parse(expected)) {
+        (Ok(candidate), Ok(expected)) => candidate == expected,
+        _ => candidate == expected,
+    }
+}
+
+/// Present one canonical title and source URL followed by the evidence body.
+fn format_fetch_markdown(ex: &extract::Extracted, source_url: &str, display_url: &str) -> String {
+    let body = strip_source_frontmatter(&ex.markdown, source_url, ex.title.as_deref());
+    let mut markdown = String::new();
+    if let Some(title) = &ex.title {
+        markdown.push_str(&format!("# {title}\n"));
+    }
+    markdown.push_str(display_url);
+    if !body.is_empty() {
+        markdown.push_str("\n\n");
+        markdown.push_str(&body);
+    }
+    markdown
 }
 
 fn finish_result(
@@ -3390,15 +3400,36 @@ fn finish_result(
             "per_page_capped": pages.len() > 50,
         })
     });
+    // The model-facing object contains only state that can alter its next
+    // action. Evidence itself appears once in the text block below.
     let mut structured = json!({
+        "url": url,
+        "content_ok": !ex.thin && verdict == "ContentOk",
+        "content_kind": format!("{:?}", ex.content_kind),
+    });
+    if ex.thin {
+        structured["thin"] = json!(true);
+    }
+    if !matches!(ex.lang.as_str(), "" | "und" | "unknown") {
+        structured["lang"] = json!(ex.lang);
+    }
+    if let Some(next_offset) = ex.next_offset {
+        structured["next_offset"] = json!(next_offset);
+    }
+    if let Some(pdf) = &pdf {
+        structured["pdf"] = json!({
+            "pages": pdf["pages"],
+            "ocr_pages": pdf["ocr_pages"],
+        });
+    }
+
+    // Transport and extraction telemetry remains available to MCP clients but
+    // no longer competes with source evidence in model context.
+    let debug = json!({
         "status": status,
         "tier": tier,
         "verdict": verdict,
-        "content_ok": !ex.thin && verdict == "ContentOk",
-        "thin": ex.thin,
-        "content_kind": format!("{:?}", ex.content_kind),
         "quality": ex.quality,
-        "lang": ex.lang,
         "title": ex.title,
         "byline": ex.byline,
         "published": ex.published,
@@ -3406,52 +3437,16 @@ fn finish_result(
         "blocks_shown": ex.blocks_shown,
         "blocks_total": ex.blocks_total,
         "total_chars": ex.total_chars,
-        "next_offset": ex.next_offset,
         "tokens_est": ex.tokens_est,
+        "elapsed_ms": elapsed_ms,
         "escalation": trace.value(),
+        "via": ex.via,
         "pdf": pdf,
-        "url": url,
-        "ms": elapsed_ms,
     });
-    // v3: the honest adapter label : the agent sees WHICH
-    // structured source produced this result.
-    if let Some(via) = ex.via {
-        structured["via"] = json!(via);
-    }
-    // Compact metadata text block prepended for clients (Claude Code,
-    // VSCode) that drop text content when structuredContent is present.
-    let mut meta = json!({
-        "url": url,
-        "tier": tier,
-        "verdict": verdict,
-        "content_ok": !ex.thin && verdict == "ContentOk",
-        "thin": ex.thin,
-        "tokens_est": ex.tokens_est,
-        "total_chars": ex.total_chars,
-        "ms": elapsed_ms,
-        "lang": ex.lang,
-    });
-    if let Some(n) = ex.next_offset {
-        meta["next_offset"] = json!(n);
-    }
-    if let Some(via) = ex.via {
-        meta["via"] = json!(via);
-    }
-    if let Some(t) = &ex.title {
-        meta["title"] = json!(t);
-    }
-    if let Some(p) = &pdf {
-        meta["pdf_pages"] = json!(p["pages"]);
-        if p["ocr_pages"].as_u64().unwrap_or(0) > 0 {
-            meta["pdf_ocr"] = json!(p["ocr_pages"]);
-        }
-    }
     json!({
-        "content": [
-            {"type": "text", "text": format!("[meta] {}", compact_json(&meta))},
-            {"type": "text", "text": ex.markdown},
-        ],
+        "content": [{"type": "text", "text": format_fetch_markdown(ex, url, url)}],
         "structuredContent": structured,
+        "_meta": {"com.donsetch/fetch-debug": debug},
     })
 }
 
@@ -4057,10 +4052,8 @@ fn next_action_for(verdict: Option<Verdict>, status: u16, kind: &str) -> String 
 
 /// Escalation trace: the ordered record of what DonSeTch tried :
 /// HTTP → browser → OCR-style fallbacks : with tier, action,
-/// outcome and per-step latency. Surfaced as
-/// structuredContent.escalation on successes AND errors, so the
-/// agent sees exactly why a fetch took its path (and what a
-/// 20s latency was spent on) without re-deriving it.
+/// outcome and per-step latency. Successes expose it through client-only
+/// `_meta`; errors retain actionable state on the model surface.
 #[derive(Default)]
 struct Trace {
     steps: Vec<Value>,
@@ -4226,6 +4219,82 @@ mod error_code_tests {
             "crawl.resume"
         );
         assert_eq!(error_code("fetch: invalid URL", None), "fetch.invalid");
+    }
+}
+
+#[cfg(test)]
+mod fetch_output_contract_tests {
+    use super::{Trace, finish_result, format_fetch_markdown};
+    use crate::extract::{ContentKind, Extracted};
+
+    pub(super) fn extracted(markdown: &str) -> Extracted {
+        Extracted {
+            markdown: markdown.into(),
+            title: Some("Example".into()),
+            byline: Some("A. Author".into()),
+            published: Some("2026-09-04".into()),
+            site: Some("Example Site".into()),
+            total_chars: markdown.len(),
+            next_offset: None,
+            blocks_total: 4,
+            blocks_shown: 3,
+            tokens_est: markdown.len() / 4,
+            thin: false,
+            content_kind: ContentKind::Article,
+            lang: "en".into(),
+            quality: 0.91,
+            pdf_pages: None,
+            images: Vec::new(),
+            fingerprint: Some("opaque".into()),
+            via: None,
+        }
+    }
+
+    #[test]
+    fn fetch_renders_identity_once_and_hides_diagnostics_from_model_state() {
+        let mut trace = Trace::default();
+        trace.step("1", "http-fetch", "ok", 12);
+        let output = finish_result(
+            &extracted("https://example.com/page\n\n# Example\n\nEvidence."),
+            "1",
+            200,
+            "ContentOk",
+            "https://example.com/page",
+            &trace,
+            14,
+        );
+
+        assert_eq!(output["content"].as_array().unwrap().len(), 1);
+        let text = output["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text.matches("# Example").count(), 1);
+        assert_eq!(text.matches("https://example.com/page").count(), 1);
+        assert!(!text.starts_with("[meta]"));
+        let state = output["structuredContent"].as_object().unwrap();
+        for absent in [
+            "title",
+            "tier",
+            "quality",
+            "tokens_est",
+            "escalation",
+            "status",
+        ] {
+            assert!(
+                !state.contains_key(absent),
+                "{absent} leaked to model state"
+            );
+        }
+        assert_eq!(state["url"], "https://example.com/page");
+        assert_eq!(output["_meta"]["com.donsetch/fetch-debug"]["tier"], "1");
+
+        let unrelated = extracted("# Actual first section\n\nEvidence.");
+        assert!(
+            format_fetch_markdown(
+                &unrelated,
+                "https://example.com/page",
+                "https://example.com/page"
+            )
+            .contains("# Actual first section")
+        );
     }
 }
 
