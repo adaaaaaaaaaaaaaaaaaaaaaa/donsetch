@@ -1042,29 +1042,11 @@ async fn fetch_multi(
 
     let is_err = |v: &Value| v.get("isError").and_then(Value::as_bool).unwrap_or(false);
     let md_of = |v: &Value| {
-        v.pointer("/content/1/text")
+        v.pointer("/content/0/text")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string()
     };
-    let title_of = |v: &Value| {
-        v.pointer("/structuredContent/title")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
-    let tokens_of = |v: &Value| {
-        v.pointer("/structuredContent/tokens_est")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize
-    };
-    let tier_of = |v: &Value| {
-        v.pointer("/structuredContent/tier")
-            .and_then(Value::as_str)
-            .unwrap_or("?")
-            .to_string()
-    };
-
     // Budget slicing: proportional to returned size, floor 300
     // chars, only when the sum overflows.
     let mut markdowns: Vec<Option<String>> = results
@@ -1130,7 +1112,31 @@ async fn fetch_multi(
         }
     }
 
-    // Compose.
+    render_fetch_batch(&urls, &results, &markdowns, budget_tokens, &sliced_flags)
+}
+
+/// Compose a batch without repeating page evidence or transport telemetry on
+/// model-visible surfaces. Kept pure so partial and all-failed contracts are
+/// deterministic unit-test inputs.
+fn render_fetch_batch(
+    urls: &[String],
+    results: &[Value],
+    markdowns: &[Option<String>],
+    budget_tokens: Option<usize>,
+    sliced_flags: &[bool],
+) -> Value {
+    debug_assert_eq!(urls.len(), results.len());
+    debug_assert_eq!(urls.len(), markdowns.len());
+    debug_assert_eq!(urls.len(), sliced_flags.len());
+
+    let is_err = |v: &Value| v.get("isError").and_then(Value::as_bool).unwrap_or(false);
+    let title_of = |v: &Value| {
+        v.pointer("/_meta/com.donsetch~1fetch-debug/title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+
     let mut text = String::new();
     let ok_count = markdowns.iter().filter(|m| m.is_some()).count();
     let err_count = results.len() - ok_count;
@@ -1142,67 +1148,120 @@ async fn fetch_multi(
             } else {
                 title.as_str()
             };
+            let body = strip_source_frontmatter(
+                md,
+                &urls[i],
+                (!title.is_empty()).then_some(title.as_str()),
+            );
             text.push_str(&format!(
-                "## [{i}] {} : {}\ntier={} tokens≈{}\n\n{}\n\n---\n\n",
+                "## [{}] {}\n{}\n\n{}\n\n---\n\n",
+                i + 1,
                 head,
                 urls[i],
-                tier_of(r),
-                (md.len() / 4).max(1),
-                md
+                body
             ));
         } else {
             let msg = r
                 .pointer("/content/0/text")
                 .and_then(Value::as_str)
                 .unwrap_or("fetch failed");
-            text.push_str(&format!("## [{i}] {} : ERROR\n{}\n\n---\n\n", urls[i], msg));
+            text.push_str(&format!(
+                "## [{}] {} : ERROR\n{}\n\n---\n\n",
+                i + 1,
+                urls[i],
+                msg
+            ));
         }
     }
-    let mut meta = json!({
-        "urls": results.len(),
-        "ok": ok_count,
-        "errors": err_count,
-    });
-    if let Some(b) = budget_tokens {
-        meta["budget_tokens"] = json!(b);
-    }
-    let structured = json!({
-        "urls": urls,
-        "results": results.iter().enumerate().map(|(i, r)| {
+    let structured_results = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
             let mut o = json!({
                 "url": urls[i],
                 "ok": !is_err(r),
-                "tier": tier_of(r),
-                "tokens_est": tokens_of(r),
             });
+            if !is_err(r) {
+                let state = &r["structuredContent"];
+                if state.get("content_ok").and_then(Value::as_bool) == Some(false) {
+                    o["content_ok"] = json!(false);
+                }
+                for field in ["next_offset", "archived"] {
+                    if let Some(value) = state.get(field)
+                        && !value.is_null()
+                    {
+                        o[field] = value.clone();
+                    }
+                }
+                for field in ["thin", "cloak_suspected"] {
+                    if state.get(field).and_then(Value::as_bool).unwrap_or(false) {
+                        o[field] = json!(true);
+                    }
+                }
+                if let Some(changed) = state.get("changed").and_then(Value::as_str)
+                    && changed != "new"
+                {
+                    o["changed"] = json!(changed);
+                }
+            }
             if sliced_flags[i] {
                 o["sliced"] = json!(true);
             }
             if is_err(r) {
-                o["error"] = json!(r.pointer("/content/0/text").and_then(Value::as_str).unwrap_or("fetch failed"));
+                o["code"] = r
+                    .pointer("/structuredContent/code")
+                    .cloned()
+                    .unwrap_or_else(|| json!("content.extract"));
             }
             o
-        }).collect::<Vec<_>>(),
+        })
+        .collect::<Vec<_>>();
+    let mut structured = json!({
+        "ok": ok_count,
+        "errors": err_count,
+        "results": structured_results,
+    });
+    let debug_results = results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| {
+            let fetch_debug = &result["_meta"]["com.donsetch/fetch-debug"];
+            let mut item = json!({"url": urls[index]});
+            for field in ["tier", "tokens_est"] {
+                if let Some(value) = fetch_debug.get(field)
+                    && !value.is_null()
+                {
+                    item[field] = value.clone();
+                }
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    let debug = json!({
+        "count": results.len(),
         "budget_tokens": budget_tokens,
+        "results": debug_results,
     });
 
     if ok_count == 0 {
-        return tool_error_structured(
-            format!("fetch: all {} urls failed", results.len()),
+        structured["next_action"] =
+            json!("inspect the per-URL errors above; retry only transient failures individually");
+        let mut error = tool_error_structured(
+            format!(
+                "fetch: all {} urls failed\n\n{}",
+                results.len(),
+                text.trim_end()
+            ),
             "transient",
-            Some(json!({
-                "urls": urls,
-                "results": structured["results"].clone(),
-                "next_action": "see per-url errors in structuredContent.results : fetch promising ones individually",
-            })),
+            Some(structured),
         );
+        error["_meta"]["com.donsetch/fetch-batch-debug"] = debug;
+        return error;
     }
     json!({
-        "content": [
-            {"type": "text", "text": format!("[meta] {}", compact_json(&meta))},
-            {"type": "text", "text": text},
-        ],
-        "structuredContent": structured
+        "content": [{"type": "text", "text": text.trim_end()}],
+        "structuredContent": structured,
+        "_meta": {"com.donsetch/fetch-batch-debug": debug},
     })
 }
 
@@ -4295,6 +4354,92 @@ mod fetch_output_contract_tests {
             )
             .contains("# Actual first section")
         );
+    }
+}
+
+#[cfg(test)]
+mod batch_output_contract_tests {
+    use super::fetch_output_contract_tests::extracted;
+    use super::{Trace, finish_result, render_fetch_batch};
+    use serde_json::json;
+
+    #[test]
+    fn batch_keeps_evidence_order_and_per_url_failure_codes() {
+        let urls: Vec<String> = vec![
+            "https://example.com/a".into(),
+            "https://example.com/b".into(),
+        ];
+        let success = finish_result(
+            &extracted("# Example\nhttps://example.com/a\n\nAlpha."),
+            "1",
+            200,
+            "ContentOk",
+            &urls[0],
+            &Trace::default(),
+            1,
+        );
+        let failure = json!({
+            "content": [{"type": "text", "text": "request timed out"}],
+            "structuredContent": {"code": "network.timeout"},
+            "isError": true,
+        });
+        let results = vec![success, failure];
+        let markdowns = vec![
+            Some(
+                results[0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            ),
+            None,
+        ];
+        let output = render_fetch_batch(&urls, &results, &markdowns, Some(2_000), &[false, false]);
+        assert_eq!(output["content"].as_array().unwrap().len(), 1);
+        let text = output["content"][0]["text"].as_str().unwrap();
+        assert!(text.find("Alpha.").unwrap() < text.find("request timed out").unwrap());
+        assert_eq!(
+            output["structuredContent"]["results"][1]["code"],
+            "network.timeout"
+        );
+        let first = &output["structuredContent"]["results"][0];
+        assert!(first.get("content_ok").is_none());
+        assert!(first.get("content_kind").is_none());
+        assert!(first.get("thin").is_none());
+        assert!(first.get("changed").is_none());
+        assert!(first.get("tier").is_none());
+        let first_debug = &output["_meta"]["com.donsetch/fetch-batch-debug"]["results"][0];
+        assert_eq!(first_debug["tier"], "1");
+        assert!(first_debug.get("tokens_est").is_some());
+        assert!(first_debug.get("quality").is_none());
+        assert!(first_debug.get("escalation").is_none());
+
+        let flagged = json!({
+            "content": [{"type": "text", "text": "# Thin\nhttps://example.com/a"}],
+            "structuredContent": {
+                "content_ok": false,
+                "content_kind": "Page",
+                "thin": true,
+                "changed": "major",
+                "next_offset": 16000,
+                "cloak_suspected": true,
+                "archived": {"date": "2026-09-01", "age_days": 3}
+            }
+        });
+        let flagged_output = render_fetch_batch(
+            &urls[..1],
+            &[flagged],
+            &[Some("# Thin\nhttps://example.com/a".into())],
+            None,
+            &[false],
+        );
+        let flagged_state = &flagged_output["structuredContent"]["results"][0];
+        assert_eq!(flagged_state["content_ok"], false);
+        assert!(flagged_state.get("content_kind").is_none());
+        assert_eq!(flagged_state["thin"], true);
+        assert_eq!(flagged_state["changed"], "major");
+        assert_eq!(flagged_state["next_offset"], 16000);
+        assert_eq!(flagged_state["cloak_suspected"], true);
+        assert_eq!(flagged_state["archived"]["age_days"], 3);
     }
 }
 
