@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`donsetch login`: authenticated sessions for gated sites.**
+  `donsetch login x.com` opens a real browser on your display (a
+  dedicated profile, never the automation one): you sign in yourself,
+  press Enter, and donsetch harvests the session cookies into the
+  existing 0600 vault. Tier-1 fetches and tier-2 renders of that
+  domain replay the login automatically, no daemon restart needed,
+  and the per-call vault resync makes logouts (and seconds-old
+  logins) take effect live. Credentials never enter the process:
+  no keystroke capture, no screenshots, no CDP attach before
+  Enter, and `auth-state.json` stores masked metadata only (names,
+  counts, expiries, probe verdicts, never values). Ships with
+  `--list`, `--status`, `--logout`, `--import` (Netscape
+  cookies.txt, the server/CI path), multi-site mode (bare `login`),
+  a post-login wall probe (redirect-to-/login, 401/403), a doctor
+  check, hostile-input hardening (userinfo URL rejection, IDNA,
+  loopback ports), and a 12-test integration battery including a
+  live local gate-server E2E of login → gated fetch → logout →
+  re-gated fetch.
+
 ### Fixed
 
 - **`Proxy` and BYOK `KeyEntry` derived a plaintext `Debug`:** neither

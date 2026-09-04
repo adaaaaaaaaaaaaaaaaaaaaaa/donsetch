@@ -310,7 +310,7 @@ const SESSION_AUTH_HINTS: &[&str] = &[
 /// explicit auth-shaped names pass even with an expiry. Everything
 /// else (trackers, preferences, A/B buckets) is dropped so the
 /// vault stays small and meaningful.
-pub(crate) fn is_session_worthy(c: &CookieRecord) -> bool {
+pub fn is_session_worthy(c: &CookieRecord) -> bool {
     if c.domain.is_empty() || c.value.is_empty() {
         return false;
     }
@@ -358,7 +358,7 @@ pub(crate) fn merge_session_cookies(vault: &mut Vec<CookieRecord>, harvested: &[
 /// Load-modify-save with the same atomic tmp+rename write as the
 /// rest of the state file: a mid-write crash can never corrupt the
 /// vault it updates.
-pub(crate) fn store_session_cookies(cookies: &[CookieRecord]) {
+pub fn store_session_cookies(cookies: &[CookieRecord]) {
     if cookies.is_empty() {
         return;
     }
@@ -405,7 +405,7 @@ pub(crate) fn store_session_cookies(cookies: &[CookieRecord]) {
 
 /// Everything currently vaulted, across all domains, for replay
 /// into a fresh browser launch.
-pub(crate) fn load_session_cookies() -> Vec<CookieRecord> {
+pub fn load_session_cookies() -> Vec<CookieRecord> {
     let state = GhostState::load();
     let mut out = Vec::new();
     for p in state.profiles.values() {
@@ -416,6 +416,31 @@ pub(crate) fn load_session_cookies() -> Vec<CookieRecord> {
         }
     }
     out
+}
+
+/// Logout helper: drop every vaulted cookie whose domain belongs
+/// to `domain` (apex + subdomains + host-only subdomain cookies
+/// that feed the same session). Returns true if anything was
+/// removed. Load-modify-save, atomic, same as the harvest path.
+pub fn clear_session_cookies_for(domain: &str) -> bool {
+    let key = domain.trim_start_matches('.').to_ascii_lowercase();
+    if key.is_empty() {
+        return false;
+    }
+    let mut state = GhostState::load();
+    let mut removed = false;
+    for p in state.profiles.values_mut() {
+        let before = p.session_cookies.len();
+        p.session_cookies.retain(|c| {
+            let host = c.domain.trim_start_matches('.').to_ascii_lowercase();
+            !crate::auth::cookie_belongs_to(&key, &host)
+        });
+        removed |= p.session_cookies.len() != before;
+    }
+    if removed {
+        state.save();
+    }
+    removed
 }
 
 // ────────────────────────── helpers ──────────────────────────

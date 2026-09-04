@@ -86,6 +86,17 @@ impl Fetcher {
         }
     }
 
+    /// Replace the jar wholesale from the session vault (login or
+    /// logout just happened on disk). Anything not in `cookies` is
+    /// gone, which is exactly what a logout requires.
+    pub async fn reset_to(&self, cookies: &[CookieRecord]) {
+        let mut jar = self
+            .jar
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        jar.reset(cookies);
+    }
+
     /// Export all cookies for a host with their expiry, for
     /// write-back to the persistent domain profile after a
     /// successful warm fetch.

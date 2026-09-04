@@ -36,6 +36,11 @@ pub struct Daemon {
     crawler: Crawler,
     handles: Arc<Mutex<crate::handles::HandleTable>>,
     history: Arc<std::sync::Mutex<crate::pages::history::PageHistory>>,
+    /// (modified, len) of ghost-state.json at the last vault refresh:
+    /// a login or logout CLI write flips this and the next tool call
+    /// resyncs the cookie jar. mtime-only would miss same-second
+    /// login+logout pairs, hence the length pair.
+    vault_seen: tokio::sync::Mutex<Option<(u64, u64)>>,
 }
 
 impl Daemon {
@@ -140,6 +145,7 @@ impl Daemon {
             history: Arc::new(std::sync::Mutex::new(
                 crate::pages::history::PageHistory::load(),
             )),
+            vault_seen: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -147,6 +153,38 @@ impl Daemon {
     /// Called by the CLI before exit; by the MCP daemon on close.
     pub async fn shutdown(&self) {
         self.ghost_mgr.shutdown().await;
+    }
+
+    /// Resync the tier-1 cookie jar from the session vault when the
+    /// on-disk file moved (login/logout/rotation). Stat-only in the
+    /// hot path; parse only after a real change.
+    pub async fn refresh_vault(&self) {
+        let meta = std::fs::metadata(crate::paths::cache_dir().join("ghost-state.json"))
+            .ok()
+            .map(|m| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    (m.mtime() as u64, m.len())
+                }
+                #[cfg(not(unix))]
+                {
+                    (0u64, m.len())
+                }
+            });
+        let Some(sig) = meta else { return };
+        let changed = {
+            let mut seen = self.vault_seen.lock().await;
+            let changed = *seen != Some(sig);
+            if changed {
+                *seen = Some(sig);
+            }
+            changed
+        };
+        if changed {
+            let cookies = crate::ghost::cache::load_session_cookies();
+            self.fetcher.reset_to(&cookies).await;
+        }
     }
 }
 
@@ -410,6 +448,7 @@ pub(crate) async fn call_tool_ctx(
 /// DonSift. Resume tokens make huge sites paginable.
 #[allow(clippy::field_reassign_with_default)]
 async fn crawl_tool(daemon: &Arc<Daemon>, args: &Value, ctx: Option<ToolCtx>) -> Value {
+    daemon.refresh_vault().await;
     // Resume can work without a url (the seed is stored in the
     // resume state). If url is missing AND no resume token, error.
     let url = match args.get("url").and_then(Value::as_str) {
@@ -842,6 +881,7 @@ fn verdict_error(verdict: Verdict, status: u16, url: &str) -> String {
 /// with warm-start and render cache.
 #[allow(clippy::field_reassign_with_default)]
 async fn fetch_tool(daemon: &Arc<Daemon>, args: &Value, mut ctx: Option<ToolCtx>) -> Value {
+    daemon.refresh_vault().await;
     let deadline = args
         .get("deadline_ms")
         .and_then(Value::as_u64)
@@ -3343,6 +3383,7 @@ async fn bind_search_urls(daemon: &Arc<Daemon>, urls: &[String]) -> Vec<String> 
 }
 
 async fn search_tool(daemon: &Arc<Daemon>, args: &Value, mut ctx: Option<ToolCtx>) -> Value {
+    daemon.refresh_vault().await;
     let deadline = args
         .get("deadline_ms")
         .and_then(Value::as_u64)

@@ -793,9 +793,47 @@ search speed, mainstream source authority, no-sitemap discovery.
 
 | It can NOT | Why |
 |---|---|
-| Sites requiring login | Page rendering, not authenticated sessions. |
+| Interactive captchas (hCaptcha, reCAPTCHA, Turnstile) | Honest dead end, no solving service by design. |
 | ML-DSA post-quantum signatures | BoringSSL 5.1 lacks them; lands when BoringSSL has it. |
 | Search with all engines down | Error with per-engine status. Honest, never fake. |
+
+## 🔐 Logging into sites (authenticated sessions)
+
+Pages behind a login (x.com, gated docs, internal tools) need a real
+session. `donsetch login` gives you one without ever seeing your
+credentials:
+
+```bash
+donsetch login x.com          # opens YOUR browser, you sign in, press
+                              # Enter here. Done.
+donsetch login --list         # stored sessions (names/counts only)
+donsetch login --status x.com # one domain, in detail
+donsetch login --logout x.com # forget a domain
+```
+
+How it stays safe:
+- **Credentials never enter donsetch.** It opens a real Chromium on
+  your display (dedicated profile, never the automation one). You type
+  into the browser. No keystroke capture, no screenshots, no CDP
+  attach until you press Enter.
+- After Enter the resulting cookies are harvested, filtered to
+  session-worthy ones, and stored in the same 0600 vault the fetch
+  engine already replays: tier-1 fetches AND tier-2 renders of that
+  domain carry your login automatically, no daemon restart needed.
+  Wall detection (redirect to /login, 401/403) is verified by a
+  post-login probe and surfaced in `--list`.
+- The registry (`auth-state.json`) stores metadata only: names,
+  counts, expiries, probe verdicts. Never values.
+
+Servers and CI (no display):
+
+```bash
+donsetch login --import cookies.txt x.com
+```
+
+with a Netscape-format cookie export (curl, browser extensions).
+Multi-site sessions: run bare `donsetch login`, sign into whatever you
+want in as many tabs as you like, press Enter once.
 
 ## 🤝 Contributing
 
