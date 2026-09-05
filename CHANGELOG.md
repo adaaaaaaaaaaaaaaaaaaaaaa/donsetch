@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failures the engine had nothing to do with. One shared predicate
   (`is_engine_fault`) now drives both, with a table test. Credit:
   mnaza (#124).
+- **Ranking `topup()` could leave the result vector non-sorted past
+  its depth-8 prefix**: the score nudge could push `results[7]`
+  below `results[8]`'s untouched score (a near-tied pair straddling
+  the top-up depth boundary), and callers taking more than
+  `depth` results (merge keeps 12; top-up runs at depth 8) got a
+  slice whose rank order contradicted its score order at that
+  boundary. `topup` now re-sorts the whole vector (a provided
+  testable `apply_topup_scores` helper), with a discriminating
+  boundary test. Credit: mnaza (#125).
 
 ## [3.6.2] - 2026-09-05
 
