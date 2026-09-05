@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`donsetch login` post-login probe aborted the CLI process:** the
+  probe and the CDP endpoint poll built `reqwest::blocking` clients
+  inside the tokio runtime context, which is a documented reqwest
+  panic (and with `panic = "abort"`, a hard process abort). Reproduced
+  on master: `probe_domain` in a tokio test kills the process. Fixed
+  by running the probe on a dedicated thread and converting the
+  endpoint poll to an async client. Both paths regression-tested
+  under the runtime. Credit: mnaza (#122).
 - **search --json lost titles/snippets for machine consumers** (compact
   contracts, v3.6.0): the model surface (structuredContent) stays
   compact, but the client-only `com.donsetch/search-debug` namespace now
