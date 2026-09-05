@@ -86,18 +86,23 @@ DonSeTch is built from scratch — no dependency on existing OSS web tooling:
 DonSeTch reviewers earn their paths through sustained high-quality
 contributions. The two tiers:
 
-- **Co-maintainer** (write access): merges once CI is green, keeps the
+- **Co-maintainer** (collaborator): merges once CI is green, keeps the
   project moving outside maintainer hours.
-- **Subsystem owners** (triage): the first review signal on their
-  owned paths, and issue-queue management. No merge power.
+- **Subsystem reviewers**: CODEOWNERS auto-requests their review on
+  their owned paths. No merge power, no access grants, just the
+  strongest review signal the repo can give.
 
 | Role | Person | Owns |
 |---|---|---|
 | Maintainer | @dondai44423 | everything |
 | Co-maintainer | @Mart-Bogdan | search, ghost, fetch, GitHub config |
-| Subsystem owner | @mnaza | PDF, h2 transport, cookies |
-| Subsystem owner | @adaaaaaaaaaaaaaaaaaaaaaa | MCP surface, tool specs, tests |
-| Subsystem owner | @imonlinux | Docker image, compose, HTTP transport |
+| Subsystem reviewer | @mnaza | PDF, h2 transport, cookies |
+| Subsystem reviewer | @adaaaaaaaaaaaaaaaaaaaaaa | MCP surface, tool specs, tests |
+| Subsystem reviewer | @imonlinux | Docker image, compose, HTTP transport |
+
+(A personal-account repository has only two access levels: owner and
+collaborator. There is no triage tier on this repo type, so reviewer
+recognition lives in CODEOWNERS.)
 
 Authors of exceptional one-shot contributions (CloakBrowser,
 SerpBase, BYOK adapters, and others) are credited in the changelog
