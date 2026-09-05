@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boundary. `topup` now re-sorts the whole vector (a provided
   testable `apply_topup_scores` helper), with a discriminating
   boundary test. Credit: mnaza (#125).
+- **Search (S-)handles were the one unbounded in-memory store in a
+  daemon meant to run forever:** every tool search call minted up
+  to 12 fresh S-handles into the handle table and nothing ever
+  evicted them (every sibling structure is bounded: L-handles
+  2048 LRU, search cache 500, prewarms 10, HTTP sessions 1024,
+  crawl governor 1024). FIFO cap of 2048, oldest-minted evicted
+  first, with a discriminating bound test.
 
 ## [3.6.2] - 2026-09-05
 
