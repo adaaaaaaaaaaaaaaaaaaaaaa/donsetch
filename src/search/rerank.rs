@@ -523,6 +523,40 @@ mod inner {
         }
     }
 
+    /// Additive cross-encoder top-up, run on post-enrichment text.
+    ///
+    /// The main blend ranks on SERP fragments (title + snippet from
+    /// the result page). Enrichment then swaps in the real page
+    /// title / meta description for the top slice, which is strictly
+    /// better evidence for semantic relevance. A full re-blend here
+    /// would let the enrichment rewrite the whole ordering on fresh
+    /// text; an additive nudge on the already-final scores breaks
+    /// close ties with page truth without re-litigating the merge.
+    pub fn topup(query: &str, results: &mut [crate::search::rank::Merged], depth: usize) {
+        const NUDGE: f64 = 0.1;
+        if results.is_empty() || depth < 2 || query.trim().is_empty() {
+            return;
+        }
+        let n = depth.min(results.len());
+        let docs: Vec<(String, String)> = results[..n]
+            .iter()
+            .map(|r| (r.title.clone(), r.snippet.clone()))
+            .collect();
+        let Some(scores) = cross_encoder_scores(query, &docs) else {
+            return;
+        };
+        if scores.len() != n {
+            return;
+        }
+        for (r, s) in results[..n].iter_mut().zip(scores) {
+            // scores are probabilities (0=irrelevant, 1=exact); the
+            // 0.5-centered product keeps the nudge zero-sum around
+            // the midpoint.
+            r.score += NUDGE * (s - 0.5);
+        }
+        results[..n].sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -753,6 +787,7 @@ mod inner {
     pub fn is_model_cached() -> bool {
         false
     }
+    pub fn topup(_query: &str, _results: &mut [crate::search::rank::Merged], _depth: usize) {}
 }
 
-pub use inner::{active, cross_encoder_scores, is_model_cached, rerank};
+pub use inner::{active, cross_encoder_scores, is_model_cached, rerank, topup};

@@ -5,6 +5,65 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Ghost SERP cascade lane:** when the plain-HTTP fan-out AND its retry
+  wave leave the merge thin (<3 working lanes or <15 hits), one browser
+  render through the shared ghost hook fetches Google's 2026 JS-shell
+  SERP (plain HTTP gets 0 result anchors; the browser render parses with
+  the existing layered parser). Joins the merge as the independent
+  `google` index family (5 keyless families instead of 4). Costs zero
+  when healthy (never fires), trust/quarantine shared with the `google`
+  base, honest `google_ghost` engine reports. Kill switches:
+  `DONSEEK_NO_GHOST_LANES`, `DONSEEK_FORCE_GHOST_LANE` (dev bench).
+- **Persisted engine health:** trust EWMAs + failure streaks live in
+  `search-trust.json`, so a benched engine stays benched across daemon
+  crashes instead of re-paying three failure lanes after every restart.
+- **Corroboration on the model surface:** compact search lines carry the
+  independent-index-family count per result (`· 3 sources`), the same
+  math the ranking consensus uses.
+- **Ranking top-up on page truth:** after enrichment swaps in real page
+  titles/descriptions for the top slice, the cross-encoder gets a
+  bounded ±0.1 nudge on close calls (`DONSEEK_NO_TOPUP` = A/B switch).
+  Bench A/B: head-10 corpus MRR 0.75 → 0.80 with the top-up.
+
+### Fixed
+
+- **search --json lost titles/snippets for machine consumers** (compact
+  contracts, v3.6.0): the model surface (structuredContent) stays
+  compact, but the client-only `com.donsetch/search-debug` namespace now
+  carries the full per-result machine view (title/url/snippet/score/)
+  and the CLI `--json` re-materializes it into `meta` for pipelines.
+  The in-repo search bench had silently gone 0/30 because of the loss:
+  found live, restored, and the bench now measures real recall
+  (snippet accuracy 96.7% over the 30-question corpus, MRR 0.80).
+- **`consensus` double-counted same-engine ranks** in the JSON meta: a
+  Yahoo URL at two ranks read as consensus 2 for one opinion. Now counts
+  index families (same math as ranking), matching its own field name.
+- **Enrichment demoted slow-alive pages as dead links:** transport
+  timeouts no longer halve a result's score; only refused/DNS-dead/
+  4xx/5xx answers do (slow ≠ dead).
+- **Single-flight stampede:** two identical searches at different
+  max_results each paid a full fan-out; the flight now keys on
+  query+intent since the leader publishes the full top-12 anyway.
+- **Oversized/empty queries** now fail fast with a clean message +
+  next_action on BOTH paths (BYOK providers included), instead of
+  burning a fan-out: `donsetch search "<862-char query>"` no longer
+  reaches exa/engine endpoints.
+- **Search-health single write per search:** trust snapshots now save
+  once per completed search (not per engine outcome).
+
+### Changed
+
+- **Google News snippets** now carry `Publisher · date` instead of a bare
+  RFC-822 date string (a date alone says nothing about the story).
+- **search --json engines list** dedups engine names (an engine surfacing
+  a URL at two ranks is one opinion, same as the markdown surface).
+- **Bench harness:** `bench/search_quality.py` results cache note + the
+  search invocation verified against the current CLI arg surface.
+
 ## [3.6.1] - 2026-09-05
 
 ### Changed

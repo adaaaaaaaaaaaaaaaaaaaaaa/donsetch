@@ -51,11 +51,6 @@ impl Daemon {
     pub async fn new() -> Result<Self, crate::error::FetchError> {
         let profile = BrowserProfile::host_default();
         let fetcher = Arc::new(Fetcher::new(profile.clone())?);
-        let searcher = Arc::new(Searcher::new(
-            Fetcher::new(profile.clone())?,
-            EgressPool::from_env(),
-        ));
-        searcher.preflight();
         let proxies = crate::transport::proxy::load_all();
         let ghost_mgr = GhostManager::new().await;
         let state = Arc::new(Mutex::new(GhostState::load()));
@@ -72,71 +67,34 @@ impl Daemon {
         // Build ghost escalation hook for the crawl: renders
         // JS-only pages in the headless browser so SPA sites
         // yield real content instead of empty shells. Capped at
-        // 3 per crawl by the orchestrator.
-        let ghost_hook: crate::crawl::GhostHook = {
-            let ghost_mgr = Arc::clone(&ghost_mgr);
-            let profile = profile.clone();
-            let fetcher = Arc::clone(&fetcher);
-            let state = Arc::clone(&state);
-            Arc::new(move |url: String| {
-                let ghost_mgr = Arc::clone(&ghost_mgr);
-                let profile = profile.clone();
-                let fetcher = Arc::clone(&fetcher);
-                let state = Arc::clone(&state);
-                async move {
-                    // Render cache shortcut.
-                    {
-                        let s = state.lock().await;
-                        if let Some(rc) = s.render_for(&url) {
-                            return Ok(crate::crawl::GhostRender {
-                                html: rc.html.clone(),
-                            });
-                        }
-                    }
-                    let mut g = match ghost_mgr.acquire(&profile).await {
-                        Ok(g) => g,
-                        Err(e) => return Err(format!("browser launch: {e}")),
-                    };
-                    let page =
-                        match ops::ghost_fetch(&mut g, &url, std::time::Duration::from_secs(20))
-                            .await
-                        {
-                            Ok(p) => p,
-                            Err(first) => {
-                                // Retry once on transient timeout.
-                                match ops::ghost_fetch(
-                                    &mut g,
-                                    &url,
-                                    std::time::Duration::from_secs(20),
-                                )
-                                .await
-                                {
-                                    Ok(p) => p,
-                                    Err(second) => {
-                                        return Err(format!("render: {first}; retry: {second}"));
-                                    }
-                                }
-                            }
-                        };
-                    if page.captcha {
-                        return Err("interactive captcha (unsolvable by design)".to_string());
-                    }
-                    if !page.cookies.is_empty() {
-                        fetcher.import_cookies(&page.cookies).await;
-                        crate::ghost::cache::store_session_cookies(&page.cookies);
-                    }
-                    {
-                        let mut s = state.lock().await;
-                        s.record_render(&url, &page.html);
-                    }
-                    Ok(crate::crawl::GhostRender { html: page.html })
-                }
-                .boxed()
-            })
-        };
+        // 3 per crawl by the orchestrator. The search clone runs
+        // the SAME machinery but never serves from the render
+        // cache: a cached walled SERP would replay as "no
+        // results" forever inside one TTL window.
+        let ghost_hook = make_ghost_hook(
+            Arc::clone(&ghost_mgr),
+            profile.clone(),
+            Arc::clone(&fetcher),
+            Arc::clone(&state),
+            false,
+        );
+        let search_ghost = make_ghost_hook(
+            Arc::clone(&ghost_mgr),
+            profile.clone(),
+            Arc::clone(&fetcher),
+            Arc::clone(&state),
+            true,
+        );
 
         let (crawler, _gov) = crawl_real::build(Arc::clone(&fetcher), proxies);
         let crawler = crawler.with_ghost(ghost_hook);
+
+        let searcher = Arc::new(
+            Searcher::new(Fetcher::new(profile.clone())?, EgressPool::from_env())
+                .with_ghost(search_ghost),
+        );
+        searcher.preflight();
+
         Ok(Self {
             fetcher,
             profile,
@@ -3655,6 +3613,69 @@ fn search_batch_deadline_error(queries: &[String]) -> Value {
     )
 }
 
+/// Ghost render capability shared by the crawl and the search
+/// SERP cascade lane. `skip_cache_read` = never serve a previous
+/// render from the cache (the search lane uses this: a cached
+/// walled SERP would replay "no results" for the whole TTL).
+/// Writes are always kept: the cache still serves normal fetches
+/// of the same URL.
+fn make_ghost_hook(
+    ghost_mgr: std::sync::Arc<GhostManager>,
+    profile: BrowserProfile,
+    fetcher: std::sync::Arc<Fetcher>,
+    state: Arc<tokio::sync::Mutex<GhostState>>,
+    skip_cache_read: bool,
+) -> crate::crawl::GhostHook {
+    std::sync::Arc::new(move |url: String| {
+        let ghost_mgr = std::sync::Arc::clone(&ghost_mgr);
+        let profile = profile.clone();
+        let fetcher = std::sync::Arc::clone(&fetcher);
+        let state = Arc::clone(&state);
+        async move {
+            // Render cache shortcut (crawl only).
+            if !skip_cache_read {
+                let s = state.lock().await;
+                if let Some(rc) = s.render_for(&url) {
+                    return Ok(crate::crawl::GhostRender {
+                        html: rc.html.clone(),
+                    });
+                }
+            }
+            let mut g = match ghost_mgr.acquire(&profile).await {
+                Ok(g) => g,
+                Err(e) => return Err(format!("browser launch: {e}")),
+            };
+            let page = match ops::ghost_fetch(&mut g, &url, std::time::Duration::from_secs(20))
+                .await
+            {
+                Ok(p) => p,
+                Err(first) => {
+                    // Retry once on transient timeout.
+                    match ops::ghost_fetch(&mut g, &url, std::time::Duration::from_secs(20)).await {
+                        Ok(p) => p,
+                        Err(second) => {
+                            return Err(format!("render: {first}; retry: {second}"));
+                        }
+                    }
+                }
+            };
+            if page.captcha {
+                return Err("interactive captcha (unsolvable by design)".to_string());
+            }
+            if !page.cookies.is_empty() {
+                fetcher.import_cookies(&page.cookies).await;
+                crate::ghost::cache::store_session_cookies(&page.cookies);
+            }
+            {
+                let mut s = state.lock().await;
+                s.record_render(&url, &page.html);
+            }
+            Ok(crate::crawl::GhostRender { html: page.html })
+        }
+        .boxed()
+    })
+}
+
 #[derive(Debug)]
 struct SearchFailure {
     cause: String,
@@ -3716,17 +3737,14 @@ fn search_model_meta(out: &crate::search::SearchOutcome, handles: &[String]) -> 
 }
 
 fn search_debug_meta(out: &crate::search::SearchOutcome) -> Value {
-    let mut debug = search::render_meta(out);
-    if let Some(results) = debug.get_mut("results").and_then(Value::as_array_mut) {
-        for result in results {
-            if let Some(fields) = result.as_object_mut() {
-                fields.remove("title");
-                fields.remove("url");
-                fields.remove("snippet");
-            }
-        }
-    }
-    debug
+    // Full machine view: per-result title/url/snippet/score plus
+    // the engines report. This is the client-only namespace (the
+    // model never sees _meta), so the detail costs CLI/pipeline
+    // consumers nothing and no model tokens. The compact-contract
+    // PR pruned search-debug down to telemetry only, which broke
+    // every machine consumer reading meta.results[].snippet (the
+    // in-repo bench went 0/30 silently; live-found, restored).
+    search::render_meta(out)
 }
 
 /// Execute explicit query variants concurrently and keep every result set
@@ -3849,6 +3867,14 @@ async fn search_outcome(
     max: usize,
     intent: Option<Intent>,
 ) -> Result<crate::search::SearchOutcome, SearchFailure> {
+    // Input hygiene first: a bad query is a permanent-shaped failure
+    // whether the fanout would have been BYOK or local.
+    if let Some(problem) = search::validate_query(query) {
+        return Err(SearchFailure {
+            cause: problem,
+            byok_tried: false,
+        });
+    }
     // Reload from disk first : picks up keys added/removed
     // via CLI while the daemon was running.
     daemon.byok.reload();
@@ -4429,9 +4455,12 @@ mod search_output_contract_tests {
         }
         let debug = search_debug_meta(&output);
         assert_eq!(debug["results"][0]["score"], 0.9);
-        assert!(debug["results"][0].get("title").is_none());
-        assert!(debug["results"][0].get("url").is_none());
-        assert!(debug["results"][0].get("snippet").is_none());
+        // The machine channel (client-only _meta) carries the full
+        // per-result view: scripts, the bench, and pipelines read
+        // meta.results[].snippet through the CLI --json re-materializer.
+        assert_eq!(debug["results"][0]["title"], "Visible in markdown");
+        assert_eq!(debug["results"][0]["url"], "https://example.com/answer");
+        assert_eq!(debug["results"][0]["snippet"], "Evidence belongs to text");
     }
 }
 

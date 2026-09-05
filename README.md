@@ -478,21 +478,36 @@ Disable with `DONSEEK_NO_DISK_STATE=1`.
 
 ## 🔎 Keyless search
 
-No API key, no account. 10+ keyless backends in parallel on your
-machine, merged, deduped, ranked.
+No API key, no account. 5 keyless engines across 4 independent index
+families + 8 official verticals run in parallel on your machine, merged,
+deduped, ranked.
 
-- **Backends**: Brave, Bing, DuckDuckGo, Mojeek, Yandex, Startpage
+- **Backends:** Bing-family (Bing, DuckDuckGo, Yahoo), Brave, Mojeek
   + keyless verticals (GitHub, Wikipedia, HN, Semantic Scholar, arXiv,
   StackExchange, MDN, Google News).
+- **Ghost SERP cascade lane:** if the plain fan-out and its retry wave
+  leave the merge thin (<3 lanes or <15 hits), one headless render
+  unlocks Google's 2026 JS-shell SERP as a 4th consensus family. Costs
+  nothing when healthy (only fires under underdelivery); reports itself
+  honestly as `google_ghost`.
 - **Semantic reranking**: local ONNX cross-encoder
   (`ms-marco-MiniLM-L-6-v2`, 23MB) reads query + title + snippet
-  through full attention. 60/40 blend with RRF + BM25 + consensus.
+  through full attention. 60/40 blend with RRF + BM25 + consensus, plus
+  a post-enrichment top-up that re-scores close calls using the
+  destination page's real title/description instead of SERP fragments.
 - **Consensus**: a URL several independent indexes return gets a
-  boost; every result carries `score`, `consensus`, `engines`.
+  boost; every result carries `score`, `consensus` (independent-index
+  families), `engines`. Corroboration also rides the compact model
+  surface as `· N sources` per result.
+- **Engine health is learned and persisted:** per-engine trust EWMAs
+  and chronic-failure quarantine survive daemon restarts; dead engines
+  get benched instead of burning fan-out slots every query.
 - **Entity coverage penalty**: anchor entities ("B-tree", version
   numbers, years) checked against results. Wrong entity → 0.3x.
 - **Honest reporting**: `weak=true` means low consensus; per-engine
   status is always visible. No fake "no results".
+- **Bench harness note:** search-quality result caching lives in
+  `~/.cache/donsetch/bench-search/`; delete it when comparing binaries.
 
 Keyless quality (110 questions, 11 niches, no keys): **95.5%**
 answer-in-snippet vs Tavily's published 93.3% LLM-graded. Reproduce:

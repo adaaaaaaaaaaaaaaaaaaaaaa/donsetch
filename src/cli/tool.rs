@@ -433,13 +433,48 @@ fn render_json_envelope(result: &Value, url: &str) -> Value {
         let mut envelope = json!({
             "ok": true,
             "content": content,
-            "meta": sc,
+            "meta": machine_meta(result, &sc),
         });
         if !url.is_empty() {
             envelope["url"] = json!(url);
         }
         envelope
     }
+}
+
+/// Machine meta for the --json channel: the compact model surface
+/// (structuredContent) plus the full machine view re-materialized
+/// from the client-only debug namespace when the tool carries one
+/// (search). The MCP contract keeps _meta out of the model's
+/// context by design; the CLI channel is FOR machines, so it loses
+/// nothing (the compact-contract PR had silently broken every
+/// script that reads meta.results[].snippet; the live bench
+/// caught it).
+fn machine_meta(result: &Value, sc: &Value) -> Value {
+    const SEARCH_MACHINE_FIELDS: &[&str] = &[
+        "intent",
+        "weak",
+        "cached",
+        "elapsed_ms",
+        "provider",
+        "results",
+        "engines",
+    ];
+    let debug = result
+        .get("_meta")
+        .and_then(|m| m.get("com.donsetch/search-debug"))
+        .filter(|p| p.is_object());
+    let mut meta = sc.clone();
+    if let Some(dbg) = debug.and_then(|p| p.as_object())
+        && let Some(meta_obj) = meta.as_object_mut()
+    {
+        for field in SEARCH_MACHINE_FIELDS {
+            if let Some(v) = dbg.get(*field) {
+                meta_obj.insert((*field).to_string(), v.clone());
+            }
+        }
+    }
+    meta
 }
 
 // ── Top-level help ───────────────────────────────────────────
