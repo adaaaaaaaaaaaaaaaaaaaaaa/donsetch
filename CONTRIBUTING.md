@@ -81,6 +81,29 @@ DonSeTch is built from scratch — no dependency on existing OSS web tooling:
 - **Anti-bot failures**: include the site URL and the `verdict` field from the response.
 - **Search issues**: include the query, the `engines` report from structuredContent, and whether `weak=true`.
 
+## Reviewers & maintainers
+
+DonSeTch reviewers earn their paths through sustained high-quality
+contributions. The two tiers:
+
+- **Co-maintainer** (write access): merges once CI is green, keeps the
+  project moving outside maintainer hours.
+- **Subsystem owners** (triage): the first review signal on their
+  owned paths, and issue-queue management. No merge power.
+
+| Role | Person | Owns |
+|---|---|---|
+| Maintainer | @dondai44423 | everything |
+| Co-maintainer | @Mart-Bogdan | search, ghost, fetch, GitHub config |
+| Subsystem owner | @mnaza | PDF, h2 transport, cookies |
+| Subsystem owner | @adaaaaaaaaaaaaaaaaaaaaaa | MCP surface, tool specs, tests |
+| Subsystem owner | @imonlinux | Docker image, compose, HTTP transport |
+
+Authors of exceptional one-shot contributions (CloakBrowser,
+SerpBase, BYOK adapters, and others) are credited in the changelog
+and release notes and are welcome back for a second wave, at which
+point subsystem ownership opens up.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the AGPL v3.
