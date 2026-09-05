@@ -5,6 +5,18 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Engine trust EWMA was eroded by infra failures:** the quarantine
+  gate excluded `dead-proxy`/`auth-fail`/`no-results` but the trust
+  EWMA only excluded `no-results`, so dead egresses and BYOK key
+  problems quietly dinged engine trust (the ranking weight) for
+  failures the engine had nothing to do with. One shared predicate
+  (`is_engine_fault`) now drives both, with a table test. Credit:
+  mnaza (#124).
+
 ## [3.6.2] - 2026-09-05
 
 ### Added
