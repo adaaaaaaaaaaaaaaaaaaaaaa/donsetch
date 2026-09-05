@@ -15,9 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render evidence once, retain actionable routing and recovery state, and
   move bounded diagnostics to client-only `_meta`. The three existing tools,
   acquisition, ranking, explicit query grouping, and fallback behavior are
-  unchanged.
+  unchanged. tools/list schema tokens dropped from ~3.5k to ~2.0k (measured).
   Credit: adaaaaaaaaaaaaaaaaaaaaa (#120). CLI stats footer updated in the
   same change set to read moved telemetry from `_meta`.
+- **CLI multi-fetch markers:** `donsetch fetch url1 url2 ...` prints an
+  explicit `### [n] URL` boundary before each result, matching the MCP
+  batch layout; large batches are parseable again.
+- **README honesty:** token and envelope claims updated to the compact
+  contracts (2.0k tools/list, model-state vs client-telemetry division).
 
 ### Fixed
 
@@ -26,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point, so `cargo clippy --all-targets -- -Dwarnings` does not compile them
   as unused code on Windows or macOS.
   Credit: adaaaaaaaaaaaaaaaaaaaaa (#121).
+- **pi extension fetch badge:** the via-cache/via-ghost label reads the
+  tier from the compact-contract debug payload, so the badge survives the
+  new envelopes (and still falls back to the old surface).
 
 ## [3.6.0] - 2026-09-04
 

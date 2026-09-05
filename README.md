@@ -58,7 +58,7 @@ and as a standalone CLI.
 | 🔑 **Keyless search** | 10+ backends in parallel, fused by cross-engine consensus + local semantic reranking. No API keys. $0 forever. BYOK optional. |
 | 📄 **Pixel-fusion PDF** | Glyphs + rendered pixels from the same stream, fused deterministically. Per-region trust audit. Scanned PDFs auto-OCR'd. |
 | 🧬 **Built from scratch** | Own HTTP/2 (HPACK, flow control), own extraction engine, own PDF parser, own search aggregator, own crawl engine. |
-| 🪶 **~3.5k tokens** | Three tools, ~3.5k tokens total in the MCP context. Every token earns its place. |
+| 🪶 **~2k tokens** | Three tools, ~2.0k tokens of total schema (tools/list, measured). Every token earns its place. |
 
 ## 🆕 v3, the agent-first upgrade
 
@@ -322,8 +322,12 @@ The CLI is a thin adapter over the same engine the MCP server uses:
 | 🕷️ **`web_crawl`** | Best-first same-domain crawl. Sitemap + frontier, `focus` ranking, elastic pacing, resume tokens, honest stop reasons. |
 
 Tool schemas: `donsetch tools`. Every tool returns structured errors
-with stable codes + `next_action`; every content result carries
-`content_ok`, `quality`, and the escalation trace.
+with stable codes + `next_action`. v3.6 compact contracts: the model
+surface (content + structuredContent) carries only evidence and the
+state that can alter the next action, `content_ok`, `thin`, `changed`,
+`next_offset`, error codes, while transport telemetry (tier, quality,
+escalation trace, timings, engines) stays available to clients under
+`_meta` e.g. `_meta["com.donsetch/fetch-debug"]`.
 
 ## 🖱️ Browser actions, page control inside fetch
 

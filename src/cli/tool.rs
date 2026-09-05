@@ -160,6 +160,11 @@ async fn run_bulk_fetch(
             if i > 0 {
                 println!();
             }
+            // Multi-fetch markers: a 12-URL batch of similar pages is
+            // unparseable without an explicit per-result boundary.
+            if urls.len() > 1 {
+                println!("### [{}] {}", i + 1, urls[i]);
+            }
             match result {
                 Ok(v) => {
                     let code = render_result(v, false, quiet, "fetch");
