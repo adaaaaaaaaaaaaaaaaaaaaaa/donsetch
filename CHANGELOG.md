@@ -5,7 +5,7 @@ All notable changes to DonSeTch are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.6.2] - 2026-09-05
 
 ### Added
 
@@ -39,6 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by running the probe on a dedicated thread and converting the
   endpoint poll to an async client. Both paths regression-tested
   under the runtime. Credit: mnaza (#122).
+- **Linux warm-connect (TFO) path shipped three real bugs in 3.6.x:**
+  (1) `sockaddr_of` returned a pointer to a local inside its own match
+  arm: dangling-pointer UB, benign only by stack-layout luck (the
+  shipped path "worked" by accident of stack reuse);
+  (2) `from_ne_bytes(...).to_be()` reversed the IPv4 octets on every
+  little-endian target, so warm TFO connects dialed octet-reversed
+  addresses (203.0.113.7 → 7.113.0.203), always failed, and silently
+  fell back to a plain connect: warm TCP Fast Open never actually
+  worked on Linux in 3.6.x, and the fix makes warm connects genuinely
+  faster (fewer round trips on repeat-navigation origins);
+  (3) the raw `libc::connect` on a TFO-requesting socket is a real
+  blocking syscall that ran inline on the executor thread: measured
+  against loopback by the author at ~135s vs ~220µs for a plain
+  connect, silently defeating the outer connect timeout. Fixed with
+  `spawn_blocking` + honest fallback to a plain connect. Structs now
+  returned by value, execute-test covers the executor-freedom pattern
+  with a stated caveat. Credit: mnaza (#123).
 - **search --json lost titles/snippets for machine consumers** (compact
   contracts, v3.6.0): the model surface (structuredContent) stays
   compact, but the client-only `com.donsetch/search-debug` namespace now
